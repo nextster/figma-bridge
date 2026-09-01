@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { color-scheme: light dark; font: 12px Inter, system-ui, sans-serif; }
+    body { margin: 0; padding: 18px; background: var(--figma-color-bg); color: var(--figma-color-text); }
+    h1 { margin: 0 0 8px; font-size: 18px; }
+    p { margin: 0 0 14px; color: var(--figma-color-text-secondary); line-height: 1.45; }
+    .status { padding: 10px 12px; border: 1px solid var(--figma-color-border); border-radius: 8px; margin-bottom: 14px; }
+    .status[data-tone="ok"] { border-color: var(--figma-color-border-success); }
+    .status[data-tone="error"] { border-color: var(--figma-color-border-danger); }
+    form { display: grid; gap: 8px; }
+    input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--figma-color-border); border-radius: 6px; background: var(--figma-color-bg-secondary); color: inherit; }
+    button { padding: 9px 12px; border: 0; border-radius: 6px; background: var(--figma-color-bg-brand); color: var(--figma-color-text-onbrand); font-weight: 600; }
+    code { font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>Figma Bridge</h1>
+  <p>Keep this plugin open while Codex reads or edits this file.</p>
+  <div id="status" class="status">Waiting for local companion…</div>
+  <form id="pairing">
+    <label for="token">Pairing token</label>
+    <input id="token" type="password" autocomplete="off" placeholder="Run: npm run bridge -- pair">
+    <button type="submit">Pair and connect</button>
+  </form>
+  <script>
+    const status = document.getElementById('status');
+    const pairing = document.getElementById('pairing');
+    const tokenInput = document.getElementById('token');
+    let token = '';
+    let client = {};
+    let socket;
+    let retry;
+
+    function setStatus(text, tone = '') {
+      status.textContent = text;
+      status.dataset.tone = tone;
+    }
+
+    function connect() {
+      clearTimeout(retry);
+      if (!token) {
+        setStatus('Pairing token required.');
+        pairing.hidden = false;
+        return;
+      }
+      setStatus('Connecting to local companion…');
+      socket = new WebSocket('ws://127.0.0.1:3847/bridge');
+      socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', token, client })));
+      socket.addEventListener('message', event => {
+        const message = JSON.parse(event.data);
+        if (message.type === 'auth.ok') {
+          pairing.hidden = true;
+          setStatus(`Connected · ${client.fileName || 'Figma'} · ${client.pageName || 'page'}`, 'ok');
+        } else if (message.type === 'rpc.request') {
+          parent.postMessage({ pluginMessage: { type: 'bridge-command', id: message.id, command: message.command, arguments: message.arguments } }, '*');
+        }
+      });
+      socket.addEventListener('close', event => {
+        setStatus(event.code === 4403 ? 'Pairing token rejected.' : 'Companion disconnected; retrying…', 'error');
+        if (event.code === 4403) pairing.hidden = false;
+        else retry = setTimeout(connect, 1500);
+      });
+      socket.addEventListener('error', () => setStatus('Cannot reach local companion; retrying…', 'error'));
+    }
+
+    pairing.addEventListener('submit', event => {
+      event.preventDefault();
+      const value = tokenInput.value.trim();
+      parent.postMessage({ pluginMessage: { type: 'save-token', token: value } }, '*');
+    });
+
+    window.addEventListener('message', event => {
+      const message = event.data.pluginMessage;
+      if (!message) return;
+      if (message.type === 'bridge-init' || message.type === 'token-saved') {
+        token = message.token || '';
+        client = message.client || {};
+        tokenInput.value = '';
+        if (socket) socket.close();
+        connect();
+      } else if (message.type === 'bridge-response' && socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'rpc.response', id: message.id, ok: message.ok, result: message.result, error: message.error }));
+      } else if (message.type === 'client-update') {
+        client = message.client || client;
+        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'client.update', client }));
+      }
+    });
+
+    parent.postMessage({ pluginMessage: { type: 'ui-ready' } }, '*');
+  </script>
+</body>
+</html>

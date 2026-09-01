@@ -1,0 +1,26 @@
+{
+  "name": "figma-bridge",
+  "version": "0.1.0",
+  "description": "Local, bidirectional bridge between Codex and Figma Desktop.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm --prefix figma-plugin run build",
+    "check": "node scripts/check.mjs",
+    "test": "node --test tests/*.test.mjs companion/test/*.test.mjs plugins/figma-bridge/test/*.test.mjs && npm --prefix figma-plugin test",
+    "verify": "npm run check && npm test && npm run build",
+    "setup": "node scripts/setup.mjs",
+    "uninstall": "node scripts/setup.mjs --uninstall",
+    "bridge": "node companion/src/cli.mjs",
+    "dev:link": "node scripts/dev.mjs link",
+    "dev:status": "node scripts/dev.mjs status",
+    "dev:unlink": "node scripts/dev.mjs unlink"
+  },
+  "dependencies": {
+    "ws": "8.21.3"
+  }
+}

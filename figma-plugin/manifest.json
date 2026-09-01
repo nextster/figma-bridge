@@ -1,0 +1,13 @@
+{
+  "name": "Figma Bridge",
+  "id": "1547831264156091047",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["http://127.0.0.1:3847"],
+    "reasoning": "Connects only to the local Figma Bridge companion on this Mac."
+  }
+}

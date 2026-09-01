@@ -1,0 +1,20 @@
+{
+  "name": "figma-bridge-repo",
+  "interface": {
+    "displayName": "Figma Bridge Repo"
+  },
+  "plugins": [
+    {
+      "name": "figma-bridge",
+      "source": {
+        "source": "local",
+        "path": "./plugins/figma-bridge"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
