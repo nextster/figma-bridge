@@ -48,7 +48,7 @@
         return;
       }
       setStatus('Connecting to local companion…');
-      socket = new WebSocket('ws://127.0.0.1:3847/bridge');
+      socket = new WebSocket('ws://localhost:3847/bridge');
       socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', token, client })));
       socket.addEventListener('message', event => {
         const message = JSON.parse(event.data);

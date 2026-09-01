@@ -14,7 +14,8 @@ test("marketplace points to the canonical repository plugin", () => {
 
 test("Figma plugin network access is loopback-only", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "figma-plugin/manifest.json"), "utf8"));
-  assert.deepEqual(manifest.networkAccess.allowedDomains, ["http://127.0.0.1:3847"]);
+  assert.deepEqual(manifest.networkAccess.allowedDomains, ["none"]);
+  assert.deepEqual(manifest.networkAccess.devAllowedDomains, ["ws://localhost:3847"]);
 });
 
 test("repository contains no arbitrary evaluation command", () => {
