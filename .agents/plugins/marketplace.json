@@ -1,7 +1,7 @@
 {
-  "name": "figma-bridge-repo",
+  "name": "nextster",
   "interface": {
-    "displayName": "Figma Bridge Repo"
+    "displayName": "Nextster"
   },
   "plugins": [
     {

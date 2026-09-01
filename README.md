@@ -31,7 +31,7 @@ npm run setup
 
 Then import [figma-plugin/manifest.json](figma-plugin/manifest.json) once through **Figma Desktop -> Plugins -> Development -> Import plugin from manifest** and run **Figma Bridge** in the file Codex should use. Copy the pairing token shown by `npm run bridge -- pair` into the plugin once; Figma stores it in `clientStorage` for later runs.
 
-`npm run setup` installs a private marketplace copy under `~/.figma-bridge/codex-marketplace` and points it at the stable runtime bootstrap. Open a new Codex task after installing or changing MCP code or tools. Restarting Codex is not required.
+`npm run setup` adds Figma Bridge to the shared Nextster marketplace under `~/.codex/marketplaces/nextster` and points it at the stable runtime bootstrap. It preserves other Nextster plugins already present there. Open a new Codex task after installing or changing MCP code or tools. Restarting Codex is not required.
 
 ## Development loop
 

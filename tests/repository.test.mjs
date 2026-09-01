@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("marketplace points to the canonical repository plugin", () => {
   const marketplace = JSON.parse(fs.readFileSync(path.join(root, ".agents/plugins/marketplace.json"), "utf8"));
-  assert.equal(marketplace.name, "figma-bridge-repo");
+  assert.equal(marketplace.name, "nextster");
   assert.deepEqual(marketplace.plugins.map(plugin => plugin.source.path), ["./plugins/figma-bridge"]);
 });
 

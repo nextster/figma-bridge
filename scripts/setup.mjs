@@ -12,7 +12,13 @@ const runtimeRoot = path.join(stateDir, "runtime");
 const runtime = path.join(runtimeRoot, packageJson.version);
 const stableBootstrap = path.join(runtimeRoot, "runtime-bootstrap.mjs");
 const developmentLink = path.join(stateDir, "dev-link.json");
-const installedMarketplace = path.join(stateDir, "codex-marketplace");
+const installedMarketplace = path.resolve(
+  process.env.NEXTSTER_MARKETPLACE_DIR || path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+    "marketplaces",
+    "nextster"
+  )
+);
 const launchAgent = path.join(os.homedir(), "Library", "LaunchAgents", "dev.nextster.figma-bridge.plist");
 const label = "dev.nextster.figma-bridge";
 const domain = `gui/${process.getuid?.() ?? os.userInfo().uid}`;
@@ -71,28 +77,47 @@ function copyTree(source, destination) {
 }
 
 function installCodexPlugin() {
-  const temporary = `${installedMarketplace}.tmp-${process.pid}`;
+  const pluginsDir = path.join(installedMarketplace, "plugins");
+  const manifestDir = path.join(installedMarketplace, ".agents", "plugins");
+  const destination = path.join(pluginsDir, "figma-bridge");
+  const temporary = path.join(pluginsDir, `.figma-bridge.tmp-${process.pid}`);
+  fs.mkdirSync(pluginsDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(manifestDir, { recursive: true, mode: 0o700 });
   fs.rmSync(temporary, { recursive: true, force: true });
-  fs.mkdirSync(path.join(temporary, "plugins"), { recursive: true, mode: 0o700 });
-  copyTree(path.join(root, ".agents"), path.join(temporary, ".agents"));
-  copyTree(path.join(root, "plugins", "figma-bridge"), path.join(temporary, "plugins", "figma-bridge"));
-  const mcpPath = path.join(temporary, "plugins", "figma-bridge", ".mcp.json");
+  copyTree(path.join(root, "plugins", "figma-bridge"), temporary);
+  const mcpPath = path.join(temporary, ".mcp.json");
   const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
   mcp.mcpServers["figma-bridge"] = {
     command: process.execPath,
     args: [stableBootstrap, "mcp"],
-    cwd: path.join(installedMarketplace, "plugins", "figma-bridge")
+    cwd: destination
   };
   fs.writeFileSync(mcpPath, `${JSON.stringify(mcp, null, 2)}\n`, { mode: 0o600 });
-  fs.rmSync(installedMarketplace, { recursive: true, force: true });
-  fs.renameSync(temporary, installedMarketplace);
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.renameSync(temporary, destination);
 
-  const pluginId = "figma-bridge@figma-bridge-repo";
+  const sourceMarketplace = JSON.parse(fs.readFileSync(path.join(root, ".agents", "plugins", "marketplace.json"), "utf8"));
+  const entry = sourceMarketplace.plugins.find(item => item.name === "figma-bridge");
+  if (sourceMarketplace.name !== "nextster" || !entry) throw new Error("Invalid Nextster marketplace source");
+  const manifestPath = path.join(manifestDir, "marketplace.json");
+  let marketplace = { name: "nextster", interface: { displayName: "Nextster" }, plugins: [] };
+  if (fs.existsSync(manifestPath)) marketplace = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  if (marketplace.name !== "nextster" || !Array.isArray(marketplace.plugins)) {
+    throw new Error(`Invalid shared marketplace at ${manifestPath}`);
+  }
+  marketplace.interface = { ...(marketplace.interface || {}), displayName: "Nextster" };
+  marketplace.plugins = [...marketplace.plugins.filter(item => item.name !== "figma-bridge"), entry];
+  writePrivateJson(manifestPath, marketplace);
+
+  const pluginId = "figma-bridge@nextster";
+  run("codex", ["plugin", "remove", "figma-bridge@figma-bridge-repo", "--json"], false);
   run("codex", ["plugin", "remove", pluginId, "--json"], false);
   const marketplaces = parseJson(run("codex", ["plugin", "marketplace", "list", "--json"]).stdout);
-  const existing = marketplaces.marketplaces?.find(item => item.name === "figma-bridge-repo");
+  const legacy = marketplaces.marketplaces?.find(item => item.name === "figma-bridge-repo");
+  if (legacy) run("codex", ["plugin", "marketplace", "remove", "figma-bridge-repo", "--json"]);
+  const existing = marketplaces.marketplaces?.find(item => item.name === "nextster");
   if (existing && path.resolve(existing.root) !== installedMarketplace) {
-    run("codex", ["plugin", "marketplace", "remove", "figma-bridge-repo", "--json"]);
+    throw new Error(`Codex marketplace nextster already points to ${existing.root}; expected ${installedMarketplace}`);
   }
   if (!existing || path.resolve(existing.root) !== installedMarketplace) {
     run("codex", ["plugin", "marketplace", "add", installedMarketplace, "--json"]);
