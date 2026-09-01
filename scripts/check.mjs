@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [
   ".agents/plugins/marketplace.json",
   "companion/src/server.mjs",
+  "runtime/runtime-bootstrap.mjs",
   "figma-plugin/manifest.json",
   "plugins/figma-bridge/.codex-plugin/plugin.json",
   "plugins/figma-bridge/.mcp.json",
@@ -30,6 +31,7 @@ for (const relative of [
   "companion/src/server.mjs",
   "companion/src/client.mjs",
   "companion/src/cli.mjs",
+  "runtime/runtime-bootstrap.mjs",
   "plugins/figma-bridge/mcp/server.mjs",
   "scripts/setup.mjs",
   "scripts/dev.mjs"

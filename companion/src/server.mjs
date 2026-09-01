@@ -172,6 +172,7 @@ export async function startBridgeServer(options = {}) {
     })
   ]);
   fs.chmodSync(socketPath, 0o600);
+  const ownedSocket = fs.statSync(socketPath);
   logger.info?.(`Figma Bridge ${VERSION} listening on 127.0.0.1:${port}`);
 
   async function close() {
@@ -181,7 +182,12 @@ export async function startBridgeServer(options = {}) {
       new Promise(resolve => httpServer.close(() => resolve())),
       new Promise(resolve => controlServer.close(() => resolve()))
     ]);
-    if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+    try {
+      const currentSocket = fs.statSync(socketPath);
+      if (currentSocket.dev === ownedSocket.dev && currentSocket.ino === ownedSocket.ino) fs.unlinkSync(socketPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
   }
 
   return { close, port, socketPath, token: state.token };

@@ -3,7 +3,7 @@
 Figma Bridge is a local, bidirectional connection between Codex and Figma Desktop. It avoids the official remote MCP quota by using the public Figma Plugin API in the user's open desktop file.
 
 ```text
-Codex MCP -> Unix socket -> local companion -> authenticated loopback WebSocket -> Figma plugin
+Codex MCP -> stable bootstrap -> Unix socket -> local companion -> authenticated loopback WebSocket -> Figma plugin
 ```
 
 The bridge is intentionally local. It has no cloud relay, Figma personal access token, or arbitrary `eval` tool. Every document operation is a named command with validated inputs.
@@ -31,14 +31,7 @@ npm run setup
 
 Then import [figma-plugin/manifest.json](figma-plugin/manifest.json) once through **Figma Desktop -> Plugins -> Development -> Import plugin from manifest** and run **Figma Bridge** in the file Codex should use. Copy the pairing token shown by `npm run bridge -- pair` into the plugin once; Figma stores it in `clientStorage` for later runs.
 
-The first repository-marketplace install is:
-
-```bash
-codex plugin marketplace add /Users/artem/Code/figma-bridge
-codex plugin add figma-bridge@figma-bridge-repo
-```
-
-Open a new Codex task after installing or changing MCP tools.
+`npm run setup` installs a private marketplace copy under `~/.figma-bridge/codex-marketplace` and points it at the stable runtime bootstrap. Open a new Codex task after installing or changing MCP code or tools. Restarting Codex is not required.
 
 ## Development loop
 
@@ -49,7 +42,9 @@ npm run verify
 npm run dev:unlink
 ```
 
-`dev:link` makes new Codex tasks load the checkout MCP adapter and runs the companion from the checkout. It does not rewrite the versioned plugin cache.
+`dev:link` writes an owner-only `~/.figma-bridge/dev-link.json`. The installed stable bootstrap then makes new Codex tasks load the checkout MCP adapter and restarts the companion from the checkout. It does not rewrite Codex configuration or the versioned plugin cache. `dev:unlink` removes the pointer and returns both processes to the bundled runtime.
+
+Already open Codex tasks keep their initialized MCP process and tool schema. Use a new task after MCP changes; neither Codex nor the app server needs a restart.
 
 ## Security model
 
