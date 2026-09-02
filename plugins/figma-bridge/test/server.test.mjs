@@ -63,23 +63,54 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   write(child, 1, "initialize", { protocolVersion: "2025-06-18" });
   write(child, 2, "tools/list", {});
   write(child, 3, "tools/call", { name: "status", arguments: {} });
-  write(child, 4, "tools/call", { name: "snapshot", arguments: { clientId: "file:page", depth: 1 } });
-  write(child, 5, "tools/call", { name: "export_png", arguments: { nodeId: "1:2" } });
-  await waitUntil(() => responses.length === 5);
+  write(child, 4, "tools/call", { name: "list_pages", arguments: { clientId: "file:page" } });
+  write(child, 5, "tools/call", { name: "set_current_page", arguments: { clientId: "file:page", pageId: "5:5056" } });
+  write(child, 6, "tools/call", { name: "snapshot", arguments: { clientId: "file:page", depth: 1 } });
+  write(child, 7, "tools/call", { name: "export_png", arguments: { nodeId: "1:2" } });
+  write(child, 8, "tools/call", { name: "document_overview", arguments: { clientId: "file:page", maxComponents: 25 } });
+  write(child, 9, "tools/call", { name: "search_text", arguments: { clientId: "file:page", query: "Hello" } });
+  write(child, 10, "tools/call", { name: "set_auto_layout", arguments: { clientId: "file:page", nodeId: "1:2", direction: "VERTICAL", gap: 8 } });
+  write(child, 11, "tools/call", { name: "upsert_design_tokens", arguments: { clientId: "file:page", colors: [{ name: "Background", light: { r: 1, g: 1, b: 1 }, dark: { r: 0, g: 0, b: 0 } }] } });
+  write(child, 12, "tools/call", { name: "batch", arguments: { clientId: "file:page", dryRun: true, operations: [{ kind: "applyAutoLayout", args: { nodeId: "1:2", gap: 8 } }] } });
+  write(child, 13, "tools/call", { name: "list_design_tokens", arguments: { clientId: "file:page", collectionName: "Tokens" } });
+  write(child, 14, "tools/call", { name: "delete_design_tokens", arguments: { clientId: "file:page", collectionIds: ["VariableCollectionId:1:2"] } });
+  await waitUntil(() => responses.length === 14);
 
   const byId = id => responses.find(response => response.id === id);
   const tools = byId(2).result.tools;
-  assert.equal(tools.length, 10);
+  assert.equal(tools.length, 32);
   assert.equal(tools.find(tool => tool.name === "delete_nodes").annotations.destructiveHint, true);
   assert.equal(tools.find(tool => tool.name === "snapshot").annotations.readOnlyHint, true);
   assert.equal(tools.find(tool => tool.name === "update_nodes").annotations.idempotentHint, true);
+  assert.equal(tools.find(tool => tool.name === "set_current_page").annotations.idempotentHint, true);
+  assert.equal(tools.find(tool => tool.name === "document_overview").annotations.readOnlyHint, true);
+  assert.equal(tools.find(tool => tool.name === "replace_text").inputSchema.properties.dryRun.type, "boolean");
+  assert.equal(tools.find(tool => tool.name === "batch").inputSchema.properties.operations.maxItems, 100);
+  assert.equal(tools.find(tool => tool.name === "delete_design_tokens").annotations.destructiveHint, true);
   assert.match(byId(3).result.content[0].text, /0.1.0/);
-  assert.equal(byId(5).result.content[1].type, "image");
-  assert.deepEqual(requests.at(-2).params, {
+  assert.equal(byId(7).result.content[1].type, "image");
+  assert.deepEqual(requests.find(request => request.params?.command === "document.pages").params, {
+    clientId: "file:page",
+    command: "document.pages",
+    arguments: {}
+  });
+  assert.deepEqual(requests.find(request => request.params?.command === "document.setCurrentPage").params, {
+    clientId: "file:page",
+    command: "document.setCurrentPage",
+    arguments: { pageId: "5:5056" }
+  });
+  assert.deepEqual(requests.find(request => request.params?.command === "document.snapshot").params, {
     clientId: "file:page",
     command: "document.snapshot",
     arguments: { depth: 1 }
   });
+  assert.deepEqual(requests.find(request => request.params?.command === "document.overview").params.arguments, { maxComponents: 25 });
+  assert.deepEqual(requests.find(request => request.params?.command === "document.searchReplaceText").params.arguments, { query: "Hello", dryRun: true });
+  assert.deepEqual(requests.find(request => request.params?.command === "nodes.autoLayout").params.arguments, { nodeId: "1:2", direction: "VERTICAL", gap: 8 });
+  assert.equal(requests.find(request => request.params?.command === "designTokens.upsert").params.arguments.colors[0].name, "Background");
+  assert.equal(requests.find(request => request.params?.command === "batch.execute").params.arguments.dryRun, true);
+  assert.deepEqual(requests.find(request => request.params?.command === "designTokens.inspect").params.arguments, { collectionName: "Tokens" });
+  assert.deepEqual(requests.find(request => request.params?.command === "designTokens.delete").params.arguments, { collectionIds: ["VariableCollectionId:1:2"] });
 });
 
 function write(child, id, method, params) {

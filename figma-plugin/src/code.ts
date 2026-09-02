@@ -8,6 +8,35 @@ import {
   optionalString,
   stringIn
 } from "./validation";
+import {
+  auditDocument,
+  navigateToNodes,
+  overviewDocument,
+  searchAndReplaceText
+} from "./document-operations";
+import {
+  applyAutoLayout,
+  applyVisualProperties,
+  parseAutoLayoutOperation,
+  parseVisualPropertiesOperation
+} from "./design-operations";
+import {
+  createComponentSet,
+  createComponents,
+  createInstances,
+  deleteDesignTokens,
+  duplicateNodes,
+  executeStructureBatch,
+  groupNodes,
+  inspectDesignTokens,
+  moveNodes,
+  reorderNodes,
+  setInstanceVariantProperties,
+  ungroupNodes,
+  upsertDesignTokens,
+  type ExternalBatchHandlers
+} from "./structure-operations";
+import { withUndoTransaction } from "./undo-transaction";
 
 declare const __html__: string;
 
@@ -27,15 +56,15 @@ async function initialize(): Promise<void> {
   figma.ui.postMessage({ type: "bridge-init", token: typeof token === "string" ? token : "", client: clientInfo() });
 }
 
-figma.ui.onmessage = async (message: CommandMessage | { type: "save-token"; token: string } | { type: "ui-ready" }) => {
+figma.ui.onmessage = async (message: CommandMessage | { type: "save-token" | "store-token"; token: string } | { type: "ui-ready" }) => {
   if (message.type === "ui-ready") {
     await initialize();
     return;
   }
-  if (message.type === "save-token") {
+  if (message.type === "save-token" || message.type === "store-token") {
     const token = stringIn(message.token, 40, 200, "Pairing token");
     await figma.clientStorage.setAsync("figma-bridge-token", token);
-    figma.ui.postMessage({ type: "token-saved", token, client: clientInfo() });
+    if (message.type === "save-token") figma.ui.postMessage({ type: "token-saved", token, client: clientInfo() });
     return;
   }
   if (message.type !== "bridge-command") return;
@@ -67,8 +96,20 @@ function clientInfo(): Record<string, string> {
 
 async function dispatch(command: string, args: Record<string, unknown>): Promise<unknown> {
   switch (command) {
+    case "document.pages":
+      return listPages();
+    case "document.setCurrentPage":
+      return setCurrentPage(args);
     case "document.snapshot":
       return snapshot(args);
+    case "document.overview":
+      return overviewDocument(args);
+    case "document.searchReplaceText":
+      return searchAndReplaceText(args);
+    case "document.navigate":
+      return navigateToNodes(args);
+    case "document.audit":
+      return auditDocument(args);
     case "selection.get":
       return figma.currentPage.selection.map(node => serializeNode(node, boundedDepth(args.depth), boundedChildren(args.maxChildren)));
     case "nodes.get":
@@ -83,9 +124,90 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return deleteNodes(args);
     case "nodes.exportPng":
       return exportPng(args);
+    case "nodes.autoLayout":
+      return applyAutoLayout(args);
+    case "nodes.visual":
+      return applyVisualProperties(args);
+    case "components.create":
+      return createComponents(args);
+    case "components.createSet":
+      return createComponentSet(args);
+    case "instances.create":
+      return createInstances(args);
+    case "instances.setProperties":
+      return setInstanceVariantProperties(args);
+    case "nodes.duplicate":
+      return duplicateNodes(args);
+    case "nodes.move":
+      return moveNodes(args);
+    case "nodes.reorder":
+      return reorderNodes(args);
+    case "nodes.group":
+      return groupNodes(args);
+    case "nodes.ungroup":
+      return ungroupNodes(args);
+    case "designTokens.upsert":
+      return upsertDesignTokens(args);
+    case "designTokens.inspect":
+      return inspectDesignTokens(args);
+    case "designTokens.delete":
+      return deleteDesignTokens(args);
+    case "batch.execute":
+      return executeStructureBatch(args, batchHandlers());
     default:
       throw new Error(`Unsupported Figma command: ${command}`);
   }
+}
+
+function batchHandlers(): ExternalBatchHandlers {
+  return {
+    applyAutoLayout: {
+      plan: async args => {
+        const operation = parseAutoLayoutOperation(args);
+        await sceneNode(operation.nodeId);
+        return { summary: `Apply auto layout to ${operation.nodeId}`, affectedNodeIds: [operation.nodeId] };
+      },
+      execute: applyAutoLayout
+    },
+    applyVisualProperties: {
+      plan: async args => {
+        const operation = parseVisualPropertiesOperation(args);
+        await sceneNode(operation.nodeId);
+        return { summary: `Apply visual properties to ${operation.nodeId}`, affectedNodeIds: [operation.nodeId] };
+      },
+      execute: applyVisualProperties
+    },
+    searchReplaceText: {
+      plan: async args => {
+        const result = await searchAndReplaceText({ ...args, dryRun: true });
+        const matches = Array.isArray(result.matches) ? result.matches : [];
+        return {
+          summary: `Replace ${String(result.occurrenceCount || 0)} text occurrence(s)`,
+          affectedNodeIds: matches.flatMap(match =>
+            match && typeof match === "object" && typeof (match as Record<string, unknown>).id === "string"
+              ? [(match as Record<string, unknown>).id as string]
+              : [])
+        };
+      },
+      execute: args => searchAndReplaceText({ ...args, dryRun: false, commitUndo: false })
+    }
+  };
+}
+
+function listPages(): unknown[] {
+  return figma.root.children.map(page => ({
+    id: page.id,
+    name: page.name,
+    current: page.id === figma.currentPage.id
+  }));
+}
+
+async function setCurrentPage(args: Record<string, unknown>): Promise<unknown> {
+  const pageId = stringIn(args.pageId, 1, 128, "pageId");
+  const page = figma.root.children.find(candidate => candidate.id === pageId);
+  if (!page) throw new Error(`Figma page not found: ${pageId}`);
+  await figma.setCurrentPageAsync(page);
+  return { id: page.id, name: page.name, current: true };
 }
 
 function snapshot(args: Record<string, unknown>): unknown {
@@ -207,8 +329,11 @@ async function updateNodes(args: Record<string, unknown>): Promise<unknown[]> {
 
 async function deleteNodes(args: Record<string, unknown>): Promise<{ deleted: string[] }> {
   const ids = nodeIds(args.nodeIds);
-  for (const id of ids) (await sceneNode(id)).remove();
-  return { deleted: ids };
+  const nodes = await Promise.all(ids.map(sceneNode));
+  return withUndoTransaction(async () => {
+    for (const node of nodes) node.remove();
+    return { deleted: ids };
+  });
 }
 
 async function exportPng(args: Record<string, unknown>): Promise<unknown> {

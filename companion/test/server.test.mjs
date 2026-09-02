@@ -69,6 +69,71 @@ test("wrong pairing token is rejected", async t => {
   assert.equal(code, 4403);
 });
 
+test("Figma plugin can pair after local approval", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "figma-bridge-pair-"));
+  const port = await freePort();
+  const env = { ...process.env, FIGMA_BRIDGE_STATE_DIR: directory };
+  const approvals = [];
+  const server = await startBridgeServer({
+    env,
+    port,
+    logger: { info() {} },
+    approvePairing(request) {
+      approvals.push(request);
+      return true;
+    }
+  });
+  t.after(async () => {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const websocket = new WebSocket(`ws://127.0.0.1:${port}/bridge`, { origin: "null" });
+  t.after(() => websocket.close());
+  const received = [];
+  websocket.on("message", raw => received.push(JSON.parse(raw.toString())));
+  await once(websocket, "open");
+  websocket.send(JSON.stringify({
+    type: "pair",
+    client: { id: "paired:file", fileName: "Paired", pageName: "Home", editorType: "figma" }
+  }));
+  await waitUntil(() => received.some(message => message.type === "auth.ok"));
+
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].origin, "null");
+  assert.equal(received.find(message => message.type === "pair.ok").token, server.token);
+  const status = await requestControl("bridge.status", {}, { socketPath: server.socketPath });
+  assert.equal(status.clients[0].fileName, "Paired");
+  assert.equal(JSON.stringify(status).includes(server.token), false);
+});
+
+test("automatic pairing rejects ordinary web origins without prompting", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "figma-bridge-pair-origin-"));
+  const port = await freePort();
+  const env = { ...process.env, FIGMA_BRIDGE_STATE_DIR: directory };
+  let approvalCalls = 0;
+  const server = await startBridgeServer({
+    env,
+    port,
+    logger: { info() {} },
+    approvePairing() {
+      approvalCalls += 1;
+      return true;
+    }
+  });
+  t.after(async () => {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const websocket = new WebSocket(`ws://127.0.0.1:${port}/bridge`, { origin: "https://example.com" });
+  await once(websocket, "open");
+  websocket.send(JSON.stringify({ type: "pair", client: { id: "bad-origin" } }));
+  const [code] = await once(websocket, "close");
+  assert.equal(code, 4403);
+  assert.equal(approvalCalls, 0);
+});
+
 function once(emitter, event) {
   return new Promise((resolve, reject) => {
     emitter.once(event, (...args) => resolve(args));

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import process from "node:process";
+import { spawn } from "node:child_process";
 import { WebSocketServer } from "ws";
 import { controlSocketPath, stateDirectory } from "./paths.mjs";
 import { ensureState } from "./state.mjs";
@@ -20,8 +21,10 @@ export async function startBridgeServer(options = {}) {
   const port = Number(options.port ?? env.FIGMA_BRIDGE_PORT ?? DEFAULT_PORT);
   const clients = new Map();
   const pending = new Map();
+  const approvePairing = options.approvePairing || requestLocalPairingApproval;
   let activeClientId = null;
   let nextRequestId = 1;
+  let pairingInProgress = false;
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid FIGMA_BRIDGE_PORT");
   fs.mkdirSync(stateDirectory(env), { recursive: true, mode: 0o700 });
@@ -38,11 +41,14 @@ export async function startBridgeServer(options = {}) {
   });
   const websocketServer = new WebSocketServer({ server: httpServer, path: "/bridge", maxPayload: MAX_WS_BYTES });
 
-  websocketServer.on("connection", websocket => {
+  websocketServer.on("connection", (websocket, request) => {
     let authenticatedClientId = null;
+    let pairingPending = false;
     const authenticationTimeout = setTimeout(() => websocket.close(4401, "authentication required"), 5000);
 
-    websocket.on("message", raw => {
+    websocket.on("message", raw => void handleMessage(raw));
+
+    async function handleMessage(raw) {
       let message;
       try {
         message = JSON.parse(raw.toString("utf8"));
@@ -52,15 +58,37 @@ export async function startBridgeServer(options = {}) {
       }
 
       if (!authenticatedClientId) {
+        if (message.type === "pair") {
+          if (pairingPending || pairingInProgress || !isAllowedPairingOrigin(request.headers.origin)) {
+            websocket.close(4403, "pairing unavailable");
+            return;
+          }
+          pairingPending = true;
+          pairingInProgress = true;
+          clearTimeout(authenticationTimeout);
+          let approved = false;
+          try {
+            approved = await approvePairing({ origin: request.headers.origin || "", client: message.client || {} });
+          } catch (error) {
+            logger.error?.(`Figma Bridge pairing approval failed: ${cleanError(error)}`);
+          } finally {
+            pairingInProgress = false;
+          }
+          if (!approved || websocket.readyState !== websocket.OPEN) {
+            websocket.close(4403, "pairing denied");
+            return;
+          }
+          authenticatedClientId = authenticateClient(websocket, message.client);
+          websocket.send(JSON.stringify({ type: "pair.ok", token: state.token }));
+          websocket.send(JSON.stringify({ type: "auth.ok", clientId: authenticatedClientId, version: VERSION }));
+          return;
+        }
         if (message.type !== "auth" || !constantTimeEqual(message.token, state.token)) {
           websocket.close(4403, "authentication failed");
           return;
         }
         clearTimeout(authenticationTimeout);
-        authenticatedClientId = normalizeClientId(message.client?.id);
-        const info = sanitizeClientInfo(message.client, authenticatedClientId);
-        clients.set(authenticatedClientId, { websocket, info, connectedAt: new Date().toISOString() });
-        activeClientId = authenticatedClientId;
+        authenticatedClientId = authenticateClient(websocket, message.client);
         websocket.send(JSON.stringify({ type: "auth.ok", clientId: authenticatedClientId, version: VERSION }));
         return;
       }
@@ -79,7 +107,15 @@ export async function startBridgeServer(options = {}) {
         if (message.ok) entry.resolve(message.result);
         else entry.reject(new Error(cleanError(message.error)));
       }
-    });
+    }
+
+    function authenticateClient(socket, rawClient) {
+      const clientId = normalizeClientId(rawClient?.id);
+      const info = sanitizeClientInfo(rawClient, clientId);
+      clients.set(clientId, { websocket: socket, info, connectedAt: new Date().toISOString() });
+      activeClientId = clientId;
+      return clientId;
+    }
 
     websocket.on("close", () => {
       clearTimeout(authenticationTimeout);
@@ -191,6 +227,30 @@ export async function startBridgeServer(options = {}) {
   }
 
   return { close, port, socketPath, token: state.token };
+}
+
+function isAllowedPairingOrigin(origin) {
+  return origin === "null" || origin === "https://www.figma.com";
+}
+
+function requestLocalPairingApproval() {
+  const script = `display dialog "Figma Bridge wants to connect the open Figma plugin to Codex. Approve only if you just clicked Connect in Figma." with title "Figma Bridge" buttons {"Cancel", "Connect"} default button "Connect" cancel button "Cancel" with icon note giving up after 30`;
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/bin/osascript", ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    let errorOutput = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", chunk => { output = (output + chunk).slice(-4096); });
+    child.stderr.on("data", chunk => { errorOutput = (errorOutput + chunk).slice(-4096); });
+    child.once("error", reject);
+    child.once("close", code => {
+      if (code === 0) resolve(output.includes("button returned:Connect") && !output.includes("gave up:true"));
+      else if (code === 1 && errorOutput.includes("User canceled")) resolve(false);
+      else if (code === 1) resolve(false);
+      else reject(new Error(`pairing approval exited with status ${code}`));
+    });
+  });
 }
 
 function constantTimeEqual(first, second) {

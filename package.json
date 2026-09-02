@@ -16,6 +16,7 @@
     "setup": "node scripts/setup.mjs",
     "uninstall": "node scripts/setup.mjs --uninstall",
     "bridge": "node companion/src/cli.mjs",
+    "live:verify": "node scripts/live-verify.mjs",
     "dev:link": "node scripts/dev.mjs link",
     "dev:status": "node scripts/dev.mjs status",
     "dev:unlink": "node scripts/dev.mjs unlink"

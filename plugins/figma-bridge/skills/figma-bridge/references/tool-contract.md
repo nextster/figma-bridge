@@ -1,9 +1,20 @@
 # Tool contract
 
 - `status` and `list_files` never expose the pairing token.
-- `snapshot`, `get_selection`, `get_nodes`, and `find_nodes` are bounded read operations.
+- `list_pages`, `document_overview`, `snapshot`, `get_selection`, `get_nodes`, `find_nodes`, `search_text`, and `audit_document` are bounded read operations.
+- `set_current_page` changes only the connected plugin's active page and does not edit the document.
 - `create_nodes` supports `FRAME`, `RECTANGLE`, `ELLIPSE`, and `TEXT` only.
 - `update_nodes` supports name, position, size, visibility, opacity, solid RGB fill, and text characters only.
+- `set_auto_layout` covers direction, gap, padding, alignment, and axis sizing on frame-like nodes.
+- `set_visual_properties` covers corners, solid/gradient paints, strokes, shadows/blurs, and text typography.
+- Component tools create components, combine variants, create instances, and set instance component properties.
+- Structure tools duplicate, move/reparent, reorder, group, and ungroup exact node IDs.
+- `upsert_design_tokens` creates or updates a local variable collection, modes, color/spacing/typography variables, and bound local paint/text styles. It does not publish team-library styles; the active Figma plan may limit a collection to one mode.
+- `list_design_tokens` reads local collections, modes, variables, paint styles, and text styles without mutation.
+- `delete_design_tokens` permanently removes only exact inspected local collection/variable/style IDs and is destructive.
+- `replace_text` searches the entire loaded file and defaults to `dryRun: true`.
+- `navigate_to_nodes` changes the active page/selection/viewport but does not edit document nodes.
+- `batch` accepts only documented operation kinds, defaults to `dryRun: true`, rolls back on execution failure, and commits a successful execution as one user-visible Undo step.
 - `delete_nodes` permanently removes explicit scene-node IDs and is marked destructive.
 - `export_png` returns at most 8 MiB. Lower the scale or export a smaller frame if it rejects the result.
 - The plugin must remain open in each Figma file that should be available to Codex.

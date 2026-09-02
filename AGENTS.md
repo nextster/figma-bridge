@@ -19,10 +19,10 @@
 
 ## Current command surface
 
-- Read: bridge status, connected files, page/selection snapshots, exact node lookup, and bounded name/type search.
-- Write: create `FRAME`, `RECTANGLE`, `ELLIPSE`, and `TEXT`; update name, position, size, visibility, opacity, text, and solid RGB fill; delete exact inspected node IDs.
+- Read: bridge status, connected files, whole-file overview, page/selection snapshots, exact node lookup, bounded name/type and whole-file text search, token/style inspection, and document audit.
+- Write: create and update basic nodes, Auto Layout, gradients/strokes/effects/typography, components/variants/instances, structural operations, whole-file text replacement, and local variables/styles with modes. Allowlisted batches default to dry-run and execute as one Undo step with rollback.
 - Output: export an exact node or the first selected node as PNG, capped at 8 MiB.
-- Not implemented yet: Auto Layout, components, instances, variants, styles, effects, images, arbitrary vectors, prototyping, variables, and whole-file duplication.
+- Not implemented yet: image fills, arbitrary vectors, prototyping, and whole-file duplication.
 
 ## Development
 

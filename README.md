@@ -11,10 +11,22 @@ The bridge is intentionally local. It has no cloud relay, Figma personal access 
 ## Current tools
 
 - Inspect connection state and open Figma files.
+- List and switch pages without desktop automation.
 - Snapshot the current page or selection with bounded depth.
+- Summarize every page, top-level frame, component, component set, and file statistic in one bounded call.
 - Find and inspect nodes.
 - Create frames, rectangles, ellipses, and text.
-- Update a safe set of node properties.
+- Configure Auto Layout, including gap, padding, alignment, and HUG/FILL/FIXED sizing.
+- Create components, variant sets, and instances; update instance properties.
+- Duplicate, move, reorder, group, and ungroup exact nodes.
+- Update corner radii, solid or gradient paints, strokes, effects, and typography.
+- Create or update local variables and paint/text styles with named modes such as Light and Dark.
+- Inspect existing local variable collections, modes, variables, paint styles, and text styles.
+- Delete exact local token/style IDs when cleanup is explicitly required.
+- Search and preview or apply literal text replacement across the whole file.
+- Select and focus exact nodes in Figma without desktop automation.
+- Audit naming, unresolved instances, repeated colors, and inconsistent Auto Layout spacing.
+- Preview allowlisted batches with `dryRun` and apply them as one Undo step with rollback on failure.
 - Delete explicitly identified nodes.
 - Export a node or selection as PNG.
 
@@ -29,7 +41,7 @@ npm run verify
 npm run setup
 ```
 
-Then import [figma-plugin/manifest.json](figma-plugin/manifest.json) once through **Figma Desktop -> Plugins -> Development -> Import plugin from manifest** and run **Figma Bridge** in the file Codex should use. Copy the pairing token shown by `npm run bridge -- pair` into the plugin once; Figma stores it in `clientStorage` for later runs.
+Then import [figma-plugin/manifest.json](figma-plugin/manifest.json) once through **Figma Desktop -> Plugins -> Development -> Import plugin from manifest** and run **Figma Bridge** in the file Codex should use. Click **Connect to Codex** and approve the local macOS dialog. Figma stores the resulting token in `clientStorage` for later runs. Manual token entry through `npm run bridge -- pair` remains available for troubleshooting.
 
 `npm run setup` adds Figma Bridge to the shared Nextster marketplace under `~/.codex/marketplaces/nextster` and points it at the stable runtime bootstrap. It preserves other Nextster plugins already present there. Open a new Codex task after installing or changing MCP code or tools. Restarting Codex is not required.
 

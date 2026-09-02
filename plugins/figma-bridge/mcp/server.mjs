@@ -27,15 +27,124 @@ const rgb = {
   },
   required: ["r", "g", "b"]
 };
+const rgba = {
+  ...rgb,
+  properties: { ...rgb.properties, a: { type: "number", minimum: 0, maximum: 1 } }
+};
+const placement = {
+  parentId: nodeId,
+  index: { type: "integer", minimum: 0, maximum: 100000 },
+  x: { type: "number", minimum: -1000000, maximum: 1000000 },
+  y: { type: "number", minimum: -1000000, maximum: 1000000 }
+};
+const componentProperties = {
+  type: "object", minProperties: 1, maxProperties: 50,
+  additionalProperties: { oneOf: [{ type: "string", maxLength: 200 }, { type: "boolean" }] }
+};
+const stringProperties = {
+  type: "object", minProperties: 1, maxProperties: 20,
+  additionalProperties: { type: "string", minLength: 1, maxLength: 100 }
+};
+const padding = {
+  oneOf: [
+    { type: "number", minimum: 0, maximum: 100000 },
+    {
+      type: "object", additionalProperties: false,
+      properties: Object.fromEntries(["all", "horizontal", "vertical", "top", "right", "bottom", "left"].map(key => [key, { type: "number", minimum: 0, maximum: 100000 }]))
+    }
+  ]
+};
+const paint = {
+  type: "object", additionalProperties: false,
+  properties: {
+    type: { type: "string", enum: ["SOLID", "GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND"] },
+    color: rgb,
+    opacity: { type: "number", minimum: 0, maximum: 1 },
+    visible: { type: "boolean" },
+    stops: {
+      type: "array", minItems: 2, maxItems: 20,
+      items: {
+        type: "object", additionalProperties: false,
+        properties: { position: { type: "number", minimum: 0, maximum: 1 }, color: rgba },
+        required: ["position", "color"]
+      }
+    },
+    transform: {
+      type: "array", minItems: 2, maxItems: 2,
+      items: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" } }
+    }
+  },
+  required: ["type"]
+};
+const effect = {
+  type: "object", additionalProperties: false,
+  properties: {
+    type: { type: "string", enum: ["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"] },
+    color: rgba,
+    offset: {
+      type: "object", additionalProperties: false,
+      properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"]
+    },
+    radius: { type: "number", minimum: 0, maximum: 100000 },
+    spread: { type: "number", minimum: -100000, maximum: 100000 },
+    visible: { type: "boolean" },
+    blendMode: { type: "string", maxLength: 40 }
+  },
+  required: ["type", "radius"]
+};
+const tokenDefinition = {
+  type: "object", minProperties: 2, maxProperties: 8,
+  properties: {
+    name: { type: "string", minLength: 1, maxLength: 256 },
+    value: {},
+    light: {},
+    dark: {},
+    values: { type: "object", maxProperties: 8 }
+  },
+  required: ["name"],
+  additionalProperties: true
+};
 
 const tools = [
   tool("status", "Diagnose the local companion and connected Figma plugin instances.", {}, readOnly),
   tool("list_files", "List open Figma files whose Figma Bridge plugin is currently connected.", {}, readOnly),
+  tool("list_pages", "List every page in a connected Figma file and identify the current page.", { clientId }, readOnly),
+  tool("set_current_page", "Switch the connected Figma plugin to an exact page ID from list_pages without editing the document.", {
+    clientId,
+    pageId: nodeId
+  }, idempotentMutation, ["pageId"]),
   tool("snapshot", "Inspect the current Figma page or selection as a bounded node tree.", {
     clientId,
     scope: { type: "string", enum: ["page", "selection"], description: "Defaults to page." },
     depth,
     maxChildren
+  }, readOnly),
+  tool("document_overview", "Inspect all pages, top-level frames, components, component sets, and file statistics in one bounded call.", {
+    clientId,
+    maxTopLevelFrames: { type: "integer", minimum: 1, maximum: 1000 },
+    maxComponents: { type: "integer", minimum: 1, maximum: 1000 }
+  }, readOnly),
+  tool("search_text", "Search literal text across every page without changing the file.", {
+    clientId,
+    query: { type: "string", minLength: 1, maxLength: 1000 },
+    caseSensitive: { type: "boolean" },
+    wholeWord: { type: "boolean" },
+    limit: { type: "integer", minimum: 1, maximum: 5000 }
+  }, readOnly, ["query"]),
+  tool("replace_text", "Preview or apply a literal whole-file text replacement. dryRun defaults to true.", {
+    clientId,
+    query: { type: "string", minLength: 1, maxLength: 1000 },
+    replacement: { type: "string", maxLength: 20000 },
+    caseSensitive: { type: "boolean" },
+    wholeWord: { type: "boolean" },
+    dryRun: { type: "boolean", description: "Defaults to true. Set false only after reviewing the preview." },
+    limit: { type: "integer", minimum: 1, maximum: 5000 }
+  }, mutation, ["query", "replacement"]),
+  tool("navigate_to_nodes", "Switch to the containing page, select exact nodes, and focus them in Figma.", {
+    clientId, nodeIds: idArray(), select: { type: "boolean" }, focus: { type: "boolean" }
+  }, idempotentMutation, ["nodeIds"]),
+  tool("audit_document", "Audit the whole file for weak names, unresolved instances, repeated colors, and inconsistent Auto Layout spacing.", {
+    clientId, limit: { type: "integer", minimum: 1, maximum: 5000 }
   }, readOnly),
   tool("get_selection", "Inspect the current Figma selection.", { clientId, depth, maxChildren }, readOnly),
   tool("get_nodes", "Inspect explicitly identified Figma nodes.", { clientId, nodeIds: idArray(), depth, maxChildren }, readOnly, ["nodeIds"]),
@@ -89,6 +198,93 @@ const tools = [
       }
     }
   }, idempotentMutation, ["updates"]),
+  tool("set_auto_layout", "Set Auto Layout direction, gap, padding, alignment, and HUG/FILL/FIXED sizing on one exact node.", {
+    clientId, nodeId,
+    direction: { type: "string", enum: ["NONE", "HORIZONTAL", "VERTICAL"] },
+    gap: { type: "number", minimum: -10000, maximum: 100000 },
+    padding,
+    primaryAlignment: { type: "string", enum: ["MIN", "CENTER", "MAX", "SPACE_BETWEEN"] },
+    counterAlignment: { type: "string", enum: ["MIN", "CENTER", "MAX", "BASELINE"] },
+    primarySizing: { type: "string", enum: ["HUG", "FILL", "FIXED"] },
+    counterSizing: { type: "string", enum: ["HUG", "FILL", "FIXED"] }
+  }, idempotentMutation, ["nodeId"]),
+  tool("set_visual_properties", "Set corner radii, fills or gradients, strokes, effects, and typography on one exact node.", {
+    clientId, nodeId,
+    cornerRadius: { oneOf: [{ type: "number", minimum: 0, maximum: 100000 }, { type: "object", additionalProperties: false, properties: Object.fromEntries(["all", "topLeft", "topRight", "bottomRight", "bottomLeft"].map(key => [key, { type: "number", minimum: 0, maximum: 100000 }])) }] },
+    cornerSmoothing: { type: "number", minimum: 0, maximum: 1 },
+    fills: { type: "array", maxItems: 16, items: paint },
+    strokes: { type: "array", maxItems: 16, items: paint },
+    strokeWeight: { type: "number", minimum: 0, maximum: 100000 },
+    strokeAlign: { type: "string", enum: ["CENTER", "INSIDE", "OUTSIDE"] },
+    dashPattern: { type: "array", maxItems: 32, items: { type: "number", minimum: 0, maximum: 100000 } },
+    effects: { type: "array", maxItems: 16, items: effect },
+    typography: { type: "object", maxProperties: 12, additionalProperties: true }
+  }, idempotentMutation, ["nodeId"]),
+  tool("create_components", "Create empty components or convert exact scene nodes to components.", {
+    clientId,
+    components: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false, properties: { nodeId, name: { type: "string", maxLength: 256 }, ...placement, width: { type: "number", minimum: 1, maximum: 100000 }, height: { type: "number", minimum: 1, maximum: 100000 }, variantProperties: stringProperties } } }
+  }, mutation, ["components"]),
+  tool("create_component_set", "Combine exact component IDs into a component set of variants.", {
+    clientId, componentIds: idArray(), parentId: nodeId, index: placement.index, name: { type: "string", maxLength: 256 }
+  }, mutation, ["componentIds"]),
+  tool("create_instances", "Create instances from exact local component IDs and optionally set component properties.", {
+    clientId,
+    instances: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false, properties: { componentId: nodeId, name: { type: "string", maxLength: 256 }, ...placement, properties: componentProperties }, required: ["componentId"] } }
+  }, mutation, ["instances"]),
+  tool("set_instance_properties", "Set variant or component properties on exact instances.", {
+    clientId,
+    updates: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false, properties: { instanceId: nodeId, properties: componentProperties }, required: ["instanceId", "properties"] } }
+  }, idempotentMutation, ["updates"]),
+  tool("duplicate_nodes", "Duplicate exact nodes, optionally into another parent and position.", {
+    clientId,
+    items: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false, properties: { nodeId, name: { type: "string", maxLength: 256 }, parentId: nodeId, index: placement.index, offsetX: placement.x, offsetY: placement.y }, required: ["nodeId"] } }
+  }, mutation, ["items"]),
+  tool("move_nodes", "Move or reparent exact nodes while optionally preserving their absolute position.", {
+    clientId,
+    moves: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false, properties: { nodeId, parentId: nodeId, index: placement.index, preserveAbsolutePosition: { type: "boolean" } }, required: ["nodeId", "parentId"] } }
+  }, mutation, ["moves"]),
+  tool("reorder_nodes", "Move listed immediate children to the front of a parent in the supplied order.", {
+    clientId, parentId: nodeId, nodeIds: idArray()
+  }, mutation, ["parentId", "nodeIds"]),
+  tool("group_nodes", "Group exact nodes under an optional parent.", {
+    clientId, nodeIds: idArray(), parentId: nodeId, index: placement.index, name: { type: "string", maxLength: 256 }
+  }, mutation, ["nodeIds"]),
+  tool("ungroup_nodes", "Ungroup exact group-like containers.", { clientId, nodeIds: idArray() }, mutation, ["nodeIds"]),
+  tool("upsert_design_tokens", "Create or update local color and spacing variables, Light/Dark modes, paint styles, and variable-bound typography styles.", {
+    clientId,
+    collectionName: { type: "string", maxLength: 256 },
+    modes: { type: "array", minItems: 1, maxItems: 8, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 256 } },
+    colors: { type: "array", maxItems: 100, items: tokenDefinition },
+    spacing: { type: "array", maxItems: 100, items: tokenDefinition },
+    typography: { type: "array", maxItems: 100, items: tokenDefinition }
+  }, idempotentMutation),
+  tool("list_design_tokens", "Inspect local variable collections, modes, variables, paint styles, and text styles.", {
+    clientId,
+    collectionName: { type: "string", minLength: 1, maxLength: 256 },
+    limit: { type: "integer", minimum: 1, maximum: 1000 }
+  }, readOnly),
+  tool("delete_design_tokens", "Permanently delete exact local variable collections, variables, paint styles, or text styles.", {
+    clientId,
+    collectionIds: idArray(),
+    variableIds: idArray(),
+    paintStyleIds: idArray(),
+    textStyleIds: idArray()
+  }, destructive),
+  tool("batch", "Preview or execute an allowlisted batch as one Undo step. dryRun defaults to true; set false only after reviewing the preview.", {
+    clientId,
+    dryRun: { type: "boolean" },
+    operations: {
+      type: "array", minItems: 1, maxItems: 100,
+      items: {
+        type: "object", additionalProperties: false,
+        properties: {
+          kind: { type: "string", enum: ["createComponents", "createComponentSet", "createInstances", "setInstanceVariantProperties", "duplicateNodes", "moveNodes", "reorderNodes", "groupNodes", "ungroupNodes", "upsertDesignTokens", "applyAutoLayout", "applyVisualProperties", "searchReplaceText"] },
+          args: { type: "object" }
+        },
+        required: ["kind", "args"]
+      }
+    }
+  }, mutation, ["operations"]),
   tool("delete_nodes", "Permanently delete explicitly identified Figma nodes.", { clientId, nodeIds: idArray() }, destructive, ["nodeIds"]),
   tool("export_png", "Export an explicit node, or the first selected node, as a PNG image.", {
     clientId,
@@ -137,18 +333,41 @@ async function callTool(name, args) {
   if (name === "status") return textResult(await request("bridge.status"));
   if (name === "list_files") return textResult(await request("clients.list"));
   const map = {
+    list_pages: "document.pages",
+    set_current_page: "document.setCurrentPage",
     snapshot: "document.snapshot",
+    document_overview: "document.overview",
+    search_text: "document.searchReplaceText",
+    replace_text: "document.searchReplaceText",
+    navigate_to_nodes: "document.navigate",
+    audit_document: "document.audit",
     get_selection: "selection.get",
     get_nodes: "nodes.get",
     find_nodes: "nodes.find",
     create_nodes: "nodes.create",
     update_nodes: "nodes.update",
+    set_auto_layout: "nodes.autoLayout",
+    set_visual_properties: "nodes.visual",
+    create_components: "components.create",
+    create_component_set: "components.createSet",
+    create_instances: "instances.create",
+    set_instance_properties: "instances.setProperties",
+    duplicate_nodes: "nodes.duplicate",
+    move_nodes: "nodes.move",
+    reorder_nodes: "nodes.reorder",
+    group_nodes: "nodes.group",
+    ungroup_nodes: "nodes.ungroup",
+    upsert_design_tokens: "designTokens.upsert",
+    list_design_tokens: "designTokens.inspect",
+    delete_design_tokens: "designTokens.delete",
+    batch: "batch.execute",
     delete_nodes: "nodes.delete",
     export_png: "nodes.exportPng"
   };
   const command = map[name];
   if (!command) throw new Error(`Unknown tool: ${name}`);
   const { clientId, ...arguments_ } = args;
+  if (name === "search_text") arguments_.dryRun = true;
   const response = await request("figma.call", { clientId, command, arguments: arguments_ });
   if (name === "export_png") {
     return { content: [

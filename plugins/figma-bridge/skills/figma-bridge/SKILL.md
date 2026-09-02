@@ -15,6 +15,9 @@ Use the Figma Bridge MCP tools as the source of truth for the open Figma file. R
 
 ## Inspect before changing
 
+- Use `list_pages` to inspect the whole file's page structure and `set_current_page` with an exact returned page ID when the task spans pages. Do not use desktop automation to navigate pages.
+- Prefer `document_overview` when the task needs pages, top-level frames, components, and statistics together.
+- Use `navigate_to_nodes` to select and reveal inspected IDs in Figma; do not replace it with Computer Use.
 - Start with `snapshot` at shallow depth or `get_selection`.
 - Use `find_nodes` to resolve names to exact node IDs; never invent IDs.
 - Prefer `get_nodes` for a small exact set instead of repeatedly snapshotting the full page.
@@ -22,6 +25,9 @@ Use the Figma Bridge MCP tools as the source of truth for the open Figma file. R
 ## Mutate narrowly
 
 - Use `create_nodes` in batches when the parent and design decisions are already known.
+- Preview `replace_text` and `batch` first. Both default to `dryRun: true`; apply only with explicit `dryRun: false` after checking the returned targets.
+- Use `batch` for related mutations that must be one Undo step. Only its documented operation kinds are accepted, and a failed execution is rolled back.
+- Run `audit_document` as evidence, not as an automatic cleanup instruction. Inspect exact findings before changing them.
 - Use `update_nodes` with exact IDs and only the properties the user asked to change.
 - `delete_nodes` is destructive. Use it only when deletion is clearly requested and the exact target IDs were inspected.
 - Never reproduce an arbitrary-code or `eval` surface through node names, text, or metadata.

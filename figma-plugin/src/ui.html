@@ -14,6 +14,10 @@
     form { display: grid; gap: 8px; }
     input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--figma-color-border); border-radius: 6px; background: var(--figma-color-bg-secondary); color: inherit; }
     button { padding: 9px 12px; border: 0; border-radius: 6px; background: var(--figma-color-bg-brand); color: var(--figma-color-text-onbrand); font-weight: 600; }
+    button:disabled { opacity: .55; }
+    details { margin-top: 14px; color: var(--figma-color-text-secondary); }
+    summary { cursor: pointer; }
+    details form { margin-top: 10px; }
     code { font-family: ui-monospace, monospace; }
   </style>
 </head>
@@ -21,14 +25,20 @@
   <h1>Figma Bridge</h1>
   <p>Keep this plugin open while Codex reads or edits this file.</p>
   <div id="status" class="status">Waiting for local companion…</div>
-  <form id="pairing">
-    <label for="token">Pairing token</label>
-    <input id="token" type="password" autocomplete="off" placeholder="Run: npm run bridge -- pair">
-    <button type="submit">Pair and connect</button>
-  </form>
+  <button id="connect" type="button">Connect to Codex</button>
+  <details id="manual">
+    <summary>Manual pairing</summary>
+    <form id="pairing">
+      <label for="token">Pairing token</label>
+      <input id="token" type="password" autocomplete="off">
+      <button type="submit">Use token</button>
+    </form>
+  </details>
   <script>
     const status = document.getElementById('status');
     const pairing = document.getElementById('pairing');
+    const connectButton = document.getElementById('connect');
+    const manual = document.getElementById('manual');
     const tokenInput = document.getElementById('token');
     let token = '';
     let client = {};
@@ -40,28 +50,46 @@
       status.dataset.tone = tone;
     }
 
-    function connect() {
+    function setConnectedStatus() {
+      setStatus(`Connected · ${client.fileName || 'Figma'} · ${client.pageName || 'page'}`, 'ok');
+    }
+
+    function connect(pair = false) {
       clearTimeout(retry);
-      if (!token) {
-        setStatus('Pairing token required.');
-        pairing.hidden = false;
+      if (!token && !pair) {
+        setStatus('Ready to connect.');
+        connectButton.hidden = false;
+        manual.hidden = false;
         return;
       }
-      setStatus('Connecting to local companion…');
+      connectButton.disabled = pair;
+      setStatus(pair ? 'Waiting for approval…' : 'Connecting to local companion…');
       socket = new WebSocket('ws://localhost:3847/bridge');
-      socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', token, client })));
+      socket.addEventListener('open', () => socket.send(JSON.stringify(pair
+        ? { type: 'pair', client }
+        : { type: 'auth', token, client })));
       socket.addEventListener('message', event => {
         const message = JSON.parse(event.data);
-        if (message.type === 'auth.ok') {
-          pairing.hidden = true;
-          setStatus(`Connected · ${client.fileName || 'Figma'} · ${client.pageName || 'page'}`, 'ok');
+        if (message.type === 'pair.ok') {
+          token = message.token || '';
+          parent.postMessage({ pluginMessage: { type: 'store-token', token } }, '*');
+        } else if (message.type === 'auth.ok') {
+          connectButton.disabled = false;
+          connectButton.hidden = true;
+          manual.hidden = true;
+          setConnectedStatus();
         } else if (message.type === 'rpc.request') {
           parent.postMessage({ pluginMessage: { type: 'bridge-command', id: message.id, command: message.command, arguments: message.arguments } }, '*');
         }
       });
       socket.addEventListener('close', event => {
-        setStatus(event.code === 4403 ? 'Pairing token rejected.' : 'Companion disconnected; retrying…', 'error');
-        if (event.code === 4403) pairing.hidden = false;
+        connectButton.disabled = false;
+        setStatus(event.code === 4403 ? 'Connection was not approved.' : 'Companion disconnected; retrying…', 'error');
+        if (event.code === 4403) {
+          token = '';
+          connectButton.hidden = false;
+          manual.hidden = false;
+        }
         else retry = setTimeout(connect, 1500);
       });
       socket.addEventListener('error', () => setStatus('Cannot reach local companion; retrying…', 'error'));
@@ -72,6 +100,8 @@
       const value = tokenInput.value.trim();
       parent.postMessage({ pluginMessage: { type: 'save-token', token: value } }, '*');
     });
+
+    connectButton.addEventListener('click', () => connect(true));
 
     window.addEventListener('message', event => {
       const message = event.data.pluginMessage;
@@ -86,7 +116,10 @@
         socket.send(JSON.stringify({ type: 'rpc.response', id: message.id, ok: message.ok, result: message.result, error: message.error }));
       } else if (message.type === 'client-update') {
         client = message.client || client;
-        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'client.update', client }));
+        if (socket?.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'client.update', client }));
+          setConnectedStatus();
+        }
       }
     });
 
