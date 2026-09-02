@@ -66,8 +66,19 @@ export async function listShaders(args: Record<string, unknown>): Promise<Record
     total: shaders.length,
     truncated: Math.max(0, shaders.length - limit),
     fallbackScope: documentOnly.length > 0 ? "current-page" : undefined,
-    warning
+    warning,
+    sourceCodeAccess: {
+      availableThroughPluginApi: false,
+      instruction: "Ask the user to open Tools, find the shader, choose its menu, and click View code.",
+      deeplink: figma.fileKey ? figmaNodeUrl(figma.fileKey, occurrences[0]?.sourceNode.id) : undefined,
+      deeplinkScope: "file-and-node-only; Figma has no documented View code deeplink"
+    }
   };
+}
+
+function figmaNodeUrl(fileKey: string, nodeId?: string): string {
+  const base = `https://www.figma.com/design/${encodeURIComponent(fileKey)}`;
+  return nodeId ? `${base}?node-id=${encodeURIComponent(nodeId.replace(":", "-"))}` : base;
 }
 
 export function parseApplyShaderOperation(args: Record<string, unknown>): ApplyShaderOperation {

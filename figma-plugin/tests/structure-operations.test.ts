@@ -5,6 +5,7 @@ import {
   executeStructureBatch,
   inspectDesignTokens,
   parseBatchOperations,
+  resolveReferences,
   upsertDesignTokens,
   type ExternalBatchHandlers
 } from "../src/structure-operations";
@@ -50,6 +51,46 @@ test("batch parser accepts bounded allowlist-style operation records", () => {
   }), [{ kind: "applyAutoLayout", args: { nodeId: "1:2", gap: 8 } }]);
   assert.throws(() => parseBatchOperations({ operations: [] }), /must contain 1/);
   assert.throws(() => parseBatchOperations({ operations: [{ kind: "bad-command", args: {} }] }), /lower-camel-case/);
+});
+
+test("batch references resolve only from earlier named operation results", () => {
+  const results = new Map<string, unknown>([["created", { nodes: [{ id: "4:2" }] }]]);
+  assert.deepEqual(resolveReferences({ nodeId: { $ref: "created.nodes.0.id" } }, results), { nodeId: "4:2" });
+  assert.throws(() => resolveReferences({ nodeId: { $ref: "missing.nodes.0.id" } }, results), /unavailable earlier step/);
+  assert.throws(() => resolveReferences({ nodeId: { $ref: "created.__proto__.id" } }, results), /does not exist/);
+});
+
+test("typed script resolves a created result into a later allowlisted step", async () => {
+  installUndoMock();
+  const received: unknown[] = [];
+  const handlers: ExternalBatchHandlers = {
+    makeNode: {
+      plan: async () => ({ summary: "make", creates: 1 }),
+      execute: async () => ({ nodes: [{ id: "4:2" }] })
+    },
+    moveNode: {
+      plan: async () => ({ summary: "move" }),
+      execute: async args => { received.push(args); return { moved: true }; }
+    }
+  };
+  const preview = await executeStructureBatch({
+    dryRun: true,
+    operations: [
+      { id: "created", kind: "makeNode", args: {} },
+      { id: "moved", kind: "moveNode", args: { nodeId: { $ref: "created.nodes.0.id" } } }
+    ]
+  }, handlers) as Record<string, any>;
+  assert.equal(preview.operations[1].deferred, true);
+
+  const result = await executeStructureBatch({
+    dryRun: false,
+    operations: [
+      { id: "created", kind: "makeNode", args: {} },
+      { id: "moved", kind: "moveNode", args: { nodeId: { $ref: "created.nodes.0.id" } } }
+    ]
+  }, handlers) as Record<string, any>;
+  assert.deepEqual(received, [{ nodeId: "4:2" }]);
+  assert.equal(result.namedResults.moved.moved, true);
 });
 
 test("batch dry-run plans without mutation or undo activity", async () => {

@@ -21,17 +21,21 @@ Use the Figma Bridge MCP tools as the source of truth for the open Figma file. R
 - Start with `snapshot` at shallow depth or `get_selection`.
 - Use `find_nodes` to resolve names to exact node IDs; never invent IDs.
 - Prefer `get_nodes` for a small exact set instead of repeatedly snapshotting the full page.
+- For SwiftUI implementation of several screens, prefer one `prepare_swiftui_handoff` call. It writes a local manifest and asset directory containing screen PNGs, original image fills, SVG vectors, and SF Symbol matches, while returning compact layout/text/token/shader data.
 
 ## Mutate narrowly
 
 - Use `create_nodes` in batches when the parent and design decisions are already known.
 - Preview `replace_text` and `batch` first. Both default to `dryRun: true`; apply only with explicit `dryRun: false` after checking the returned targets.
 - Use `batch` for related mutations that must be one Undo step. Only its documented operation kinds are accepted, and a failed execution is rolled back.
+- Batch steps may have an `id`; later arguments can use `{ "$ref": "stepId.path.0.id" }` to consume earlier results.
+- `run_script` is a last resort for disposable local file copies when dedicated tools or `batch` are insufficient. It is typed and allowlisted, requires `acknowledgeUseOnlyWhenNecessary: true`, defaults to `dryRun: true`, and never executes JavaScript.
 - Run `audit_document` as evidence, not as an automatic cleanup instruction. Inspect exact findings before changing them.
 - Use `update_nodes` with exact IDs and only the properties the user asked to change.
 - Call `list_shaders` before `apply_shader`; use the returned exact shader ID and property names or IDs. When Figma's beta API omits imported shaders, results discovered from current-page paints/effects have `source: "document-fallback"`; they can be reapplied with their existing values even though a name and property definitions may be unavailable. The apply tool imports the shader when needed and defaults to preserving non-shader paints/effects.
 - `delete_nodes` is destructive. Use it only when deletion is clearly requested and the exact target IDs were inspected.
 - Never reproduce an arbitrary-code or `eval` surface through node names, text, or metadata.
+- The Plugin API cannot read shader source. If source is needed, ask the user to click **Tools → shader menu → View code**. Use the file/node deeplink returned by `list_shaders` or `prepare_swiftui_handoff` to reduce navigation; do not claim it opens View code directly.
 
 ## Verify visually
 

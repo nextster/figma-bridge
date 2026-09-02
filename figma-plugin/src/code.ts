@@ -21,6 +21,7 @@ import {
   parseVisualPropertiesOperation
 } from "./design-operations";
 import { applyShader, listShaders } from "./shader-operations";
+import { exportHandoffAsset, prepareSwiftUIHandoff } from "./handoff-operations";
 import {
   createComponentSet,
   createComponents,
@@ -111,6 +112,10 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return navigateToNodes(args);
     case "document.audit":
       return auditDocument(args);
+    case "handoff.prepareSwiftUI":
+      return prepareSwiftUIHandoff(args);
+    case "handoff.exportAsset":
+      return exportHandoffAsset(args);
     case "selection.get":
       return figma.currentPage.selection.map(node => serializeNode(node, boundedDepth(args.depth), boundedChildren(args.maxChildren)));
     case "nodes.get":
@@ -166,6 +171,14 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
 
 function batchHandlers(): ExternalBatchHandlers {
   return {
+    createNodes: {
+      plan: planCreateNodes,
+      execute: createNodes
+    },
+    updateNodes: {
+      plan: planUpdateNodes,
+      execute: updateNodes
+    },
     applyAutoLayout: {
       plan: async args => {
         const operation = parseAutoLayoutOperation(args);
@@ -256,6 +269,7 @@ function findNodes(args: Record<string, unknown>): unknown[] {
 }
 
 async function createNodes(args: Record<string, unknown>): Promise<unknown[]> {
+  await planCreateNodes(args);
   if (!Array.isArray(args.nodes) || args.nodes.length < 1 || args.nodes.length > 50) {
     throw new Error("nodes must contain 1..50 creation specs");
   }
@@ -264,6 +278,7 @@ async function createNodes(args: Record<string, unknown>): Promise<unknown[]> {
   for (const raw of args.nodes) {
     if (!raw || typeof raw !== "object") throw new Error("each node spec must be an object");
     const spec = raw as Record<string, unknown>;
+    assertKnownKeys(spec, ["type", "name", "x", "y", "width", "height", "characters", "fontSize", "fill"], "node spec");
     const type = stringIn(spec.type, 1, 20, "type").toUpperCase();
     let node: FrameNode | RectangleNode | EllipseNode | TextNode;
     if (type === "FRAME") node = figma.createFrame();
@@ -296,6 +311,7 @@ async function createNodes(args: Record<string, unknown>): Promise<unknown[]> {
 }
 
 async function updateNodes(args: Record<string, unknown>): Promise<unknown[]> {
+  await planUpdateNodes(args);
   if (!Array.isArray(args.updates) || args.updates.length < 1 || args.updates.length > 50) {
     throw new Error("updates must contain 1..50 entries");
   }
@@ -303,6 +319,7 @@ async function updateNodes(args: Record<string, unknown>): Promise<unknown[]> {
   for (const raw of args.updates) {
     if (!raw || typeof raw !== "object") throw new Error("each update must be an object");
     const update = raw as Record<string, unknown>;
+    assertKnownKeys(update, ["id", "name", "x", "y", "width", "height", "visible", "opacity", "characters", "fill"], "node update");
     const id = stringIn(update.id, 1, 128, "id");
     const node = await sceneNode(id);
     const name = optionalString(update.name, 256, "name");
@@ -330,6 +347,54 @@ async function updateNodes(args: Record<string, unknown>): Promise<unknown[]> {
     results.push(serializeNode(node, 0, 0));
   }
   return results;
+}
+
+async function planCreateNodes(args: Record<string, unknown>): Promise<{ summary: string; affectedNodeIds: string[]; creates: number }> {
+  assertKnownKeys(args, ["parentId", "nodes"], "create nodes");
+  if (!Array.isArray(args.nodes) || args.nodes.length < 1 || args.nodes.length > 50) throw new Error("nodes must contain 1..50 creation specs");
+  const parentId = optionalString(args.parentId, 128, "parentId");
+  if (parentId) await resolveParent(parentId);
+  for (const [index, raw] of args.nodes.entries()) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`nodes[${index}] must be an object`);
+    const spec = raw as Record<string, unknown>;
+    assertKnownKeys(spec, ["type", "name", "x", "y", "width", "height", "characters", "fontSize", "fill"], `nodes[${index}]`);
+    const type = stringIn(spec.type, 1, 20, `nodes[${index}].type`).toUpperCase();
+    if (!["FRAME", "RECTANGLE", "ELLIPSE", "TEXT"].includes(type)) throw new Error(`unsupported node type: ${type}`);
+    optionalString(spec.name, 256, `nodes[${index}].name`);
+    optionalNumber(spec.x, -1_000_000, 1_000_000, `nodes[${index}].x`);
+    optionalNumber(spec.y, -1_000_000, 1_000_000, `nodes[${index}].y`);
+    optionalNumber(spec.width, 1, 100_000, `nodes[${index}].width`);
+    optionalNumber(spec.height, 1, 100_000, `nodes[${index}].height`);
+    optionalString(spec.characters, 20_000, `nodes[${index}].characters`);
+    optionalNumber(spec.fontSize, 1, 512, `nodes[${index}].fontSize`);
+    color(spec.fill);
+  }
+  return { summary: `Create ${args.nodes.length} node(s)`, affectedNodeIds: parentId ? [parentId] : [], creates: args.nodes.length };
+}
+
+async function planUpdateNodes(args: Record<string, unknown>): Promise<{ summary: string; affectedNodeIds: string[] }> {
+  assertKnownKeys(args, ["updates"], "update nodes");
+  if (!Array.isArray(args.updates) || args.updates.length < 1 || args.updates.length > 50) throw new Error("updates must contain 1..50 entries");
+  const ids: string[] = [];
+  for (const [index, raw] of args.updates.entries()) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`updates[${index}] must be an object`);
+    const update = raw as Record<string, unknown>;
+    assertKnownKeys(update, ["id", "name", "x", "y", "width", "height", "visible", "opacity", "characters", "fill"], `updates[${index}]`);
+    const id = stringIn(update.id, 1, 128, `updates[${index}].id`);
+    const node = await sceneNode(id);
+    if (update.characters !== undefined && node.type !== "TEXT") throw new Error(`${id} is not a text node`);
+    optionalString(update.name, 256, `updates[${index}].name`);
+    optionalNumber(update.x, -1_000_000, 1_000_000, `updates[${index}].x`);
+    optionalNumber(update.y, -1_000_000, 1_000_000, `updates[${index}].y`);
+    optionalNumber(update.width, 1, 100_000, `updates[${index}].width`);
+    optionalNumber(update.height, 1, 100_000, `updates[${index}].height`);
+    optionalNumber(update.opacity, 0, 1, `updates[${index}].opacity`);
+    optionalString(update.characters, 20_000, `updates[${index}].characters`);
+    color(update.fill);
+    if (update.visible !== undefined && typeof update.visible !== "boolean") throw new Error(`updates[${index}].visible must be a boolean`);
+    ids.push(id);
+  }
+  return { summary: `Update ${ids.length} node(s)`, affectedNodeIds: ids };
 }
 
 async function deleteNodes(args: Record<string, unknown>): Promise<{ deleted: string[] }> {
@@ -411,4 +476,9 @@ function round(value: number): number {
 
 function titleCase(value: string): string {
   return value.charAt(0) + value.slice(1).toLocaleLowerCase();
+}
+
+function assertKnownKeys(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+  const keys = new Set(allowed);
+  for (const key of Object.keys(value)) if (!keys.has(key)) throw new Error(`${path} contains unsupported field: ${key}`);
 }

@@ -2,6 +2,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import fs from "node:fs/promises";
 
 const NAME = "figma-bridge";
 const VERSION = "0.1.0";
@@ -162,6 +163,16 @@ const tools = [
     maxTopLevelFrames: { type: "integer", minimum: 1, maximum: 1000 },
     maxComponents: { type: "integer", minimum: 1, maximum: 1000 }
   }, readOnly),
+  tool("prepare_swiftui_handoff", "Prepare several Figma screens for SwiftUI in one call: compact trees, layout, text, token candidates, image fills, SVG vectors, SF Symbol matches, shader parameters, and locally saved assets.", {
+    clientId,
+    screenIds: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: nodeId },
+    outputDirectory: { type: "string", minLength: 1, maxLength: 2000, description: "Absolute local directory for manifest and assets. Omit to use ~/.figma-bridge/handoffs." },
+    exportScale: { type: "number", minimum: 0.25, maximum: 4, description: "PNG scale for screen references. Defaults to 1." },
+    maxNodes: { type: "integer", minimum: 1, maximum: 5000 },
+    maxAssets: { type: "integer", minimum: 1, maximum: 300 },
+    maxTotalAssetBytes: { type: "integer", minimum: 1048576, maximum: 67108864, description: "Total local export cap. Defaults to 32 MiB." },
+    includeHidden: { type: "boolean" }
+  }, mutation, ["screenIds"]),
   tool("search_text", "Search literal text across every page without changing the file.", {
     clientId,
     query: { type: "string", minLength: 1, maxLength: 1000 },
@@ -333,13 +344,31 @@ const tools = [
       items: {
         type: "object", additionalProperties: false,
         properties: {
-          kind: { type: "string", enum: ["createComponents", "createComponentSet", "createInstances", "setInstanceVariantProperties", "duplicateNodes", "moveNodes", "reorderNodes", "groupNodes", "ungroupNodes", "upsertDesignTokens", "applyAutoLayout", "applyVisualProperties", "searchReplaceText"] },
-          args: { type: "object" }
+          id: { type: "string", pattern: "^[a-z][a-zA-Z0-9_]{0,63}$", description: "Optional step ID for later $ref values." },
+          kind: { type: "string", enum: ["createNodes", "updateNodes", "createComponents", "createComponentSet", "createInstances", "setInstanceVariantProperties", "duplicateNodes", "moveNodes", "reorderNodes", "groupNodes", "ungroupNodes", "upsertDesignTokens", "applyAutoLayout", "applyVisualProperties", "searchReplaceText"] },
+          args: { type: "object", description: "Arguments may contain {\"$ref\":\"earlierStep.path.0.id\"} in place of a value." }
         },
         required: ["kind", "args"]
       }
     }
   }, mutation, ["operations"]),
+  tool("run_script", "Last-resort typed scripting for local file copies only. Runs allowlisted operations, never JavaScript, with references between named steps, dry-run preview, one Undo step, and rollback. Prefer dedicated tools or batch when they are sufficient.", {
+    clientId,
+    acknowledgeUseOnlyWhenNecessary: { type: "boolean", const: true, description: "Must be true. Confirms this last-resort scripting surface is necessary." },
+    dryRun: { type: "boolean", description: "Defaults to true. Set false only after reviewing the preview." },
+    operations: {
+      type: "array", minItems: 1, maxItems: 100,
+      items: {
+        type: "object", additionalProperties: false,
+        properties: {
+          id: { type: "string", pattern: "^[a-z][a-zA-Z0-9_]{0,63}$", description: "Optional step ID for later $ref values." },
+          kind: { type: "string", enum: ["createNodes", "updateNodes", "createComponents", "createComponentSet", "createInstances", "setInstanceVariantProperties", "duplicateNodes", "moveNodes", "reorderNodes", "groupNodes", "ungroupNodes", "upsertDesignTokens", "applyAutoLayout", "applyVisualProperties", "searchReplaceText"] },
+          args: { type: "object", description: "Use {\"$ref\":\"stepId.path.0.id\"} to consume an earlier result." }
+        },
+        required: ["id", "kind", "args"]
+      }
+    }
+  }, mutation, ["acknowledgeUseOnlyWhenNecessary", "operations"]),
   tool("delete_nodes", "Permanently delete explicitly identified Figma nodes.", { clientId, nodeIds: idArray() }, destructive, ["nodeIds"]),
   tool("export_png", "Export an explicit node, or the first selected node, as a PNG image.", {
     clientId,
@@ -392,6 +421,7 @@ async function callTool(name, args) {
     set_current_page: "document.setCurrentPage",
     snapshot: "document.snapshot",
     document_overview: "document.overview",
+    prepare_swiftui_handoff: "handoff.prepareSwiftUI",
     search_text: "document.searchReplaceText",
     replace_text: "document.searchReplaceText",
     navigate_to_nodes: "document.navigate",
@@ -418,6 +448,7 @@ async function callTool(name, args) {
     list_design_tokens: "designTokens.inspect",
     delete_design_tokens: "designTokens.delete",
     batch: "batch.execute",
+    run_script: "batch.execute",
     delete_nodes: "nodes.delete",
     export_png: "nodes.exportPng"
   };
@@ -425,6 +456,11 @@ async function callTool(name, args) {
   if (!command) throw new Error(`Unknown tool: ${name}`);
   const { clientId, ...arguments_ } = args;
   if (name === "search_text") arguments_.dryRun = true;
+  if (name === "run_script") {
+    if (arguments_.acknowledgeUseOnlyWhenNecessary !== true) throw new Error("run_script requires acknowledgeUseOnlyWhenNecessary: true");
+    delete arguments_.acknowledgeUseOnlyWhenNecessary;
+  }
+  if (name === "prepare_swiftui_handoff") return textResult(await prepareSwiftUIHandoff(clientId, arguments_));
   const response = await request("figma.call", { clientId, command, arguments: arguments_ });
   if (name === "export_png") {
     return { content: [
@@ -433,6 +469,90 @@ async function callTool(name, args) {
     ] };
   }
   return textResult(response);
+}
+
+async function prepareSwiftUIHandoff(clientId, args) {
+  const { outputDirectory, exportScale = 1, maxTotalAssetBytes = 32 * 1024 * 1024, ...pluginArgs } = args;
+  if (typeof exportScale !== "number" || !Number.isFinite(exportScale) || exportScale < 0.25 || exportScale > 4) throw new Error("exportScale must be between 0.25 and 4");
+  if (!Number.isInteger(maxTotalAssetBytes) || maxTotalAssetBytes < 1024 * 1024 || maxTotalAssetBytes > 64 * 1024 * 1024) throw new Error("maxTotalAssetBytes must be between 1 and 64 MiB");
+  const handoff = await request("figma.call", { clientId, command: "handoff.prepareSwiftUI", arguments: pluginArgs });
+  const directory = await handoffDirectory(outputDirectory, handoff.file?.name || "figma");
+  const requests = Array.isArray(handoff._assetRequests) ? handoff._assetRequests : [];
+  const savedAssets = [];
+  const warnings = [];
+  let totalBytes = 0;
+  const usedNames = new Set();
+
+  for (const asset of requests) {
+    try {
+      const exported = await request("figma.call", {
+        clientId,
+        command: "handoff.exportAsset",
+        arguments: { kind: asset.kind, nodeId: asset.nodeId, imageHash: asset.imageHash, scale: exportScale }
+      });
+      const bytes = Buffer.from(exported.data, "base64");
+      if (totalBytes + bytes.byteLength > maxTotalAssetBytes) {
+        warnings.push(`Skipped ${asset.key}: total asset limit reached`);
+        continue;
+      }
+      const filename = await uniqueFilename(directory, asset.name || asset.nodeId || "asset", exported.extension || "bin", usedNames);
+      const destination = path.join(directory, filename);
+      await fs.writeFile(destination, bytes, { mode: 0o600, flag: "wx" });
+      totalBytes += bytes.byteLength;
+      savedAssets.push({
+        key: asset.key, kind: asset.kind, nodeId: asset.nodeId, path: destination,
+        mimeType: exported.mimeType, bytes: bytes.byteLength
+      });
+    } catch (error) {
+      warnings.push(`Failed ${asset.key || asset.nodeId}: ${friendlyError(error)}`);
+    }
+  }
+
+  delete handoff._assetRequests;
+  const savedByKey = new Map(savedAssets.map(asset => [asset.key, asset]));
+  handoff.assets = (handoff.assets || []).map(asset => ({ ...asset, export: savedByKey.get(asset.key) || "skipped" }));
+  handoff.outputDirectory = directory;
+  handoff.assetBytes = totalBytes;
+  if (warnings.length > 0) handoff.warnings = warnings;
+  const manifestPath = path.join(directory, await uniqueFilename(directory, "handoff", "json", usedNames));
+  handoff.manifestPath = manifestPath;
+  await fs.writeFile(manifestPath, `${JSON.stringify(handoff, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  return handoff;
+}
+
+async function handoffDirectory(requested, fileName) {
+  if (requested !== undefined) {
+    if (typeof requested !== "string" || !path.isAbsolute(requested)) throw new Error("outputDirectory must be an absolute path");
+    const resolved = path.resolve(requested);
+    if (resolved === path.parse(resolved).root || resolved === os.homedir()) throw new Error("outputDirectory must be a dedicated subdirectory");
+    await fs.mkdir(resolved, { recursive: true, mode: 0o700 });
+    return resolved;
+  }
+  const root = path.join(os.homedir(), ".figma-bridge", "handoffs");
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const directory = path.join(root, `${safeStem(fileName)}-${stamp}`);
+  await fs.mkdir(directory, { mode: 0o700 });
+  return directory;
+}
+
+async function uniqueFilename(directory, name, extension, used) {
+  const stem = safeStem(name);
+  let candidate = `${stem}.${extension}`;
+  let index = 2;
+  while (used.has(candidate) || await exists(path.join(directory, candidate))) candidate = `${stem}-${index++}.${extension}`;
+  used.add(candidate);
+  return candidate;
+}
+
+async function exists(candidate) {
+  try { await fs.access(candidate); return true; }
+  catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+}
+
+function safeStem(value) {
+  const stem = String(value).normalize("NFKD").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 96);
+  return stem || "asset";
 }
 
 function vectorSchema(keys) {

@@ -7,7 +7,7 @@
 - `update_nodes` supports name, position, size, visibility, opacity, solid RGB fill, and text characters only.
 - `set_auto_layout` covers direction, gap, padding, alignment, and axis sizing on frame-like nodes.
 - `set_visual_properties` covers corners, solid/gradient paints, strokes, shadows/blurs, and text typography.
-- `list_shaders` reads the shaders available to the current file. Property definitions are present once a shader is imported. Because Figma's beta API may return an empty list for an imported shader, the tool also reports shader paints/effects found on the current page with `source: "document-fallback"`.
+- `list_shaders` reads the shaders available to the current file. Property definitions are present once a shader is imported. Because Figma's beta API may return an empty list for an imported shader, the tool also reports shader paints/effects found on the current page with `source: "document-fallback"`. It cannot return source code; its deeplink reaches the relevant file/node only, after which the user must click View code.
 - `apply_shader` imports one exact available shader when necessary and applies it to up to 100 exact nodes as a fill, stroke, or effect in one rollback-protected Undo transaction. If discovery/import fails, an exact current-page shader ID can still be cloned with its existing values. Property overrides require definitions from Figma; property keys may be definition IDs or unique names, and variable aliases are not accepted yet.
 - Component tools create components, combine variants, create instances, and set instance component properties.
 - Structure tools duplicate, move/reparent, reorder, group, and ungroup exact node IDs.
@@ -16,7 +16,9 @@
 - `delete_design_tokens` permanently removes only exact inspected local collection/variable/style IDs and is destructive.
 - `replace_text` searches the entire loaded file and defaults to `dryRun: true`.
 - `navigate_to_nodes` changes the active page/selection/viewport but does not edit document nodes.
-- `batch` accepts only documented operation kinds, defaults to `dryRun: true`, rolls back on execution failure, and commits a successful execution as one user-visible Undo step.
+- `batch` accepts only documented operation kinds, defaults to `dryRun: true`, rolls back on execution failure, and commits a successful execution as one user-visible Undo step. Named operations can reference paths in earlier results through a single-key `$ref` object.
+- `run_script` uses the same typed allowlist and transaction engine as `batch`, requires an explicit last-resort acknowledgement, and never evaluates JavaScript. Use it only on disposable local copies.
+- `prepare_swiftui_handoff` accepts up to 20 exact screen IDs and writes a compact `handoff.json` plus bounded local PNG/image/SVG assets. Name-based SF Symbol matches are reported and skipped instead of exported; matches are candidates that code generation must verify against the visual reference.
 - `delete_nodes` permanently removes explicit scene-node IDs and is marked destructive.
 - `export_png` returns at most 8 MiB. Lower the scale or export a smaller frame if it rejects the result.
 - The plugin must remain open in each Figma file that should be available to Codex.

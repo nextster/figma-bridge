@@ -22,8 +22,9 @@
 - Read: bridge status, connected files, whole-file overview, page/selection snapshots, exact node lookup, bounded name/type and whole-file text search, token/style inspection, and document audit.
 - Write: create and update basic nodes, Auto Layout, gradients/strokes/effects/typography, components/variants/instances, structural operations, whole-file text replacement, and local variables/styles with modes. Allowlisted batches default to dry-run and execute as one Undo step with rollback.
 - Shaders: list available owned/subscribed/imported shaders and apply shader fills, strokes, or effects to exact nodes with validated property values and rollback.
-- Output: export an exact node or the first selected node as PNG, capped at 8 MiB.
-- Not implemented yet: image fills, arbitrary vectors, prototyping, and whole-file duplication.
+- Output: export an exact node or the first selected node as PNG, capped at 8 MiB; prepare bounded multi-screen SwiftUI handoffs with locally saved PNGs, original image fills, SVG vectors, and SF Symbol candidates.
+- Scripting: named, allowlisted operations may reference earlier results and execute transactionally. `run_script` is explicitly last-resort and must never become JavaScript evaluation.
+- Not implemented yet: writing image fills, creating arbitrary vectors, prototyping, and whole-file duplication.
 
 ## Development
 

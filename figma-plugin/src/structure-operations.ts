@@ -19,11 +19,15 @@ type BatchKind =
 
 type PlannedOperation = {
   index: number;
+  id?: string;
   kind: string;
   summary: string;
   affectedNodeIds: string[];
   creates: number;
+  deferred?: boolean;
 };
+
+type BatchOperation = { id?: string; kind: string; args: Json };
 
 export type ExternalBatchHandler = {
   plan: (args: Json) => Promise<{ summary: string; affectedNodeIds?: string[]; creates?: number }>;
@@ -330,14 +334,23 @@ export async function deleteDesignTokens(args: Json): Promise<unknown> {
 export async function planStructureBatch(args: Json, externalHandlers: ExternalBatchHandlers = {}): Promise<unknown> {
   const operations = parseBatchOperations(args);
   const planned: PlannedOperation[] = [];
+  const stepIds = new Set<string>();
   for (const [index, operation] of operations.entries()) {
-    if (isBatchKind(operation.kind)) planned.push(await planOperation(index, operation.kind, operation.args));
+    assertSupportedKind(operation.kind, externalHandlers);
+    validateReferences(operation.args, stepIds, `operations[${index}].args`);
+    if (hasReference(operation.args)) {
+      planned.push({
+        index, id: operation.id, kind: operation.kind,
+        summary: "Validated after references from earlier steps are resolved",
+        affectedNodeIds: [], creates: 0, deferred: true
+      });
+    } else if (isBatchKind(operation.kind)) planned.push({ ...(await planOperation(index, operation.kind, operation.args)), id: operation.id });
     else {
       const handler = externalHandlers[operation.kind];
-      if (!handler) throw new Error(`unsupported batch operation: ${operation.kind}`);
       const external = await handler.plan(operation.args);
-      planned.push(plannedOperation(index, operation.kind, external.summary, external.affectedNodeIds || [], external.creates || 0));
+      planned.push({ ...plannedOperation(index, operation.kind, external.summary, external.affectedNodeIds || [], external.creates || 0), id: operation.id });
     }
+    if (operation.id) stepIds.add(operation.id);
   }
   return {
     dryRun: true,
@@ -353,17 +366,26 @@ export async function executeStructureBatch(args: Json, externalHandlers: Extern
   if (optionalBoolean(args.dryRun, "dryRun") ?? true) return plan;
   const operations = parseBatchOperations(args);
   const results: unknown[] = [];
+  const namedResults: Json = {};
+  const stepResults = new Map<string, unknown>();
 
   return withUndoTransaction(async () => {
     for (const operation of operations) {
-      if (isBatchKind(operation.kind)) results.push(await executeOperation(operation.kind, operation.args));
+      const resolvedArgs = resolveReferences(operation.args, stepResults) as Json;
+      let operationResult: unknown;
+      if (isBatchKind(operation.kind)) operationResult = await executeOperation(operation.kind, resolvedArgs);
       else {
         const handler = externalHandlers[operation.kind];
         if (!handler) throw new Error(`unsupported batch operation: ${operation.kind}`);
-        results.push(await handler.execute(operation.args));
+        operationResult = await handler.execute(resolvedArgs);
       }
+      if (operation.id) {
+        stepResults.set(operation.id, operationResult);
+        namedResults[operation.id] = operationResult;
+      }
+      results.push(operationResult);
     }
-    return { ...plan, dryRun: false, results };
+    return { ...plan, dryRun: false, results, ...(Object.keys(namedResults).length > 0 ? { namedResults } : {}) };
   });
 }
 
@@ -487,12 +509,89 @@ async function planOperation(index: number, kind: BatchKind, args: Json): Promis
   }
 }
 
-export function parseBatchOperations(args: Json): Array<{ kind: string; args: Json }> {
+export function parseBatchOperations(args: Json): BatchOperation[] {
   const values = records(args.operations, "operations");
-  return values.map((item, index) => ({
-    kind: commandName(item.kind, `operations[${index}].kind`),
-    args: optionalRecord(item.args, `operations[${index}].args`) || {}
-  }));
+  const ids = new Set<string>();
+  return values.map((item, index) => {
+    assertKnownKeys(item, ["id", "kind", "args"], `operations[${index}]`);
+    const id = item.id === undefined ? undefined : stepId(item.id, `operations[${index}].id`);
+    if (id && ids.has(id)) throw new Error(`duplicate operation id: ${id}`);
+    if (id) ids.add(id);
+    return {
+      ...(id ? { id } : {}),
+      kind: commandName(item.kind, `operations[${index}].kind`),
+      args: optionalRecord(item.args, `operations[${index}].args`) || {}
+    };
+  });
+}
+
+/** Resolve { "$ref": "stepId.path.0.id" } values from earlier allowlisted operation results. */
+export function resolveReferences(value: unknown, results: Map<string, unknown>, path = "args"): unknown {
+  if (Array.isArray(value)) return value.map((item, index) => resolveReferences(item, results, `${path}[${index}]`));
+  if (!value || typeof value !== "object") return value;
+  const object = value as Json;
+  if (Object.prototype.hasOwnProperty.call(object, "$ref")) {
+    assertKnownKeys(object, ["$ref"], path);
+    const reference = referencePath(object.$ref, `${path}.$ref`);
+    const [step, ...segments] = reference.split(".");
+    if (!results.has(step)) throw new Error(`${path} references unavailable earlier step: ${step}`);
+    let current = results.get(step);
+    for (const segment of segments) {
+      if (Array.isArray(current) && /^\d+$/.test(segment)) current = current[Number(segment)];
+      else if (current && typeof current === "object" && Object.prototype.hasOwnProperty.call(current, segment)) current = (current as Json)[segment];
+      else throw new Error(`${path} reference path does not exist: ${reference}`);
+    }
+    if (current === undefined) throw new Error(`${path} reference resolved to undefined: ${reference}`);
+    return current;
+  }
+  return Object.fromEntries(Object.entries(object).map(([key, item]) => [key, resolveReferences(item, results, `${path}.${key}`)]));
+}
+
+function validateReferences(value: unknown, earlierIds: Set<string>, path: string): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateReferences(item, earlierIds, `${path}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const object = value as Json;
+  if (Object.prototype.hasOwnProperty.call(object, "$ref")) {
+    assertKnownKeys(object, ["$ref"], path);
+    const reference = referencePath(object.$ref, `${path}.$ref`);
+    const step = reference.split(".")[0];
+    if (!earlierIds.has(step)) throw new Error(`${path} must reference an earlier named operation: ${step}`);
+    return;
+  }
+  Object.entries(object).forEach(([key, item]) => validateReferences(item, earlierIds, `${path}.${key}`));
+}
+
+function hasReference(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasReference);
+  if (!value || typeof value !== "object") return false;
+  const object = value as Json;
+  return Object.prototype.hasOwnProperty.call(object, "$ref") || Object.values(object).some(hasReference);
+}
+
+function assertSupportedKind(kind: string, handlers: ExternalBatchHandlers): void {
+  if (!isBatchKind(kind) && !handlers[kind]) throw new Error(`unsupported batch operation: ${kind}`);
+}
+
+function stepId(value: unknown, path: string): string {
+  if (typeof value !== "string" || !/^[a-z][a-zA-Z0-9_]{0,63}$/.test(value)) {
+    throw new Error(`${path} must be lower camel case and at most 64 characters`);
+  }
+  return value;
+}
+
+function referencePath(value: unknown, path: string): string {
+  if (typeof value !== "string" || value.length > 256 || !/^[a-z][a-zA-Z0-9_]{0,63}(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|\d+))+$/.test(value)) {
+    throw new Error(`${path} must be stepId followed by a property path`);
+  }
+  return value;
+}
+
+function assertKnownKeys(value: Json, allowed: readonly string[], path: string): void {
+  const keys = new Set(allowed);
+  for (const key of Object.keys(value)) if (!keys.has(key)) throw new Error(`${path} contains unsupported field: ${key}`);
 }
 
 function isBatchKind(kind: string): kind is BatchKind {

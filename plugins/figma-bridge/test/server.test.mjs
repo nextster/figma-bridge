@@ -27,6 +27,10 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
         ? { version: "0.1.0", clients: [] }
         : request.method === "clients.list"
           ? [{ id: "file:page", fileName: "Test" }]
+          : request.params.command === "handoff.prepareSwiftUI"
+            ? { file: { name: "Test" }, assets: [{ key: "screen:1:2", kind: "screen-png" }], _assetRequests: [{ key: "screen:1:2", kind: "screen-png", nodeId: "1:2", name: "Screen" }] }
+            : request.params.command === "handoff.exportAsset"
+              ? { data: "aGVsbG8=", mimeType: "image/png", extension: "png", bytes: 5 }
           : request.params.command === "nodes.exportPng"
             ? { node: { id: "1:2", type: "FRAME" }, mimeType: "image/png", data: "aGVsbG8=" }
             : { forwarded: request.params };
@@ -76,11 +80,12 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   write(child, 14, "tools/call", { name: "delete_design_tokens", arguments: { clientId: "file:page", collectionIds: ["VariableCollectionId:1:2"] } });
   write(child, 15, "tools/call", { name: "list_shaders", arguments: { clientId: "file:page", type: "fill" } });
   write(child, 16, "tools/call", { name: "apply_shader", arguments: { clientId: "file:page", nodeIds: ["1:2"], shaderId: "shader:glass", properties: { Frost: 0.4 } } });
-  await waitUntil(() => responses.length === 16);
+  write(child, 17, "tools/call", { name: "prepare_swiftui_handoff", arguments: { clientId: "file:page", screenIds: ["1:2"], outputDirectory: directory } });
+  await waitUntil(() => responses.length === 17);
 
   const byId = id => responses.find(response => response.id === id);
   const tools = byId(2).result.tools;
-  assert.equal(tools.length, 34);
+  assert.equal(tools.length, 36);
   assert.equal(tools.find(tool => tool.name === "delete_nodes").annotations.destructiveHint, true);
   assert.equal(tools.find(tool => tool.name === "snapshot").annotations.readOnlyHint, true);
   assert.equal(tools.find(tool => tool.name === "update_nodes").annotations.idempotentHint, true);
@@ -88,6 +93,8 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   assert.equal(tools.find(tool => tool.name === "document_overview").annotations.readOnlyHint, true);
   assert.equal(tools.find(tool => tool.name === "replace_text").inputSchema.properties.dryRun.type, "boolean");
   assert.equal(tools.find(tool => tool.name === "batch").inputSchema.properties.operations.maxItems, 100);
+  assert.equal(tools.find(tool => tool.name === "prepare_swiftui_handoff").inputSchema.properties.screenIds.maxItems, 20);
+  assert.equal(tools.find(tool => tool.name === "run_script").inputSchema.properties.acknowledgeUseOnlyWhenNecessary.const, true);
   assert.equal(tools.find(tool => tool.name === "delete_design_tokens").annotations.destructiveHint, true);
   assert.equal(tools.find(tool => tool.name === "list_shaders").annotations.readOnlyHint, true);
   assert.equal(tools.find(tool => tool.name === "apply_shader").inputSchema.properties.properties.maxProperties, 64);
@@ -117,6 +124,9 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   assert.deepEqual(requests.find(request => request.params?.command === "designTokens.delete").params.arguments, { collectionIds: ["VariableCollectionId:1:2"] });
   assert.deepEqual(requests.find(request => request.params?.command === "shaders.list").params.arguments, { type: "fill" });
   assert.deepEqual(requests.find(request => request.params?.command === "shaders.apply").params.arguments, { nodeIds: ["1:2"], shaderId: "shader:glass", properties: { Frost: 0.4 } });
+  const handoff = JSON.parse(byId(17).result.content[0].text);
+  assert.equal(handoff.assets[0].export.path, path.join(directory, "Screen.png"));
+  assert.equal(handoff.manifestPath, path.join(directory, "handoff.json"));
 });
 
 function write(child, id, method, params) {
