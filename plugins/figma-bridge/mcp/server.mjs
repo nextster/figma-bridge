@@ -31,6 +31,44 @@ const rgba = {
   ...rgb,
   properties: { ...rgb.properties, a: { type: "number", minimum: 0, maximum: 1 } }
 };
+const shaderColor = rgba;
+const shaderPropertyValue = {
+  anyOf: [
+    { type: "boolean" },
+    { type: "string", maxLength: 20000 },
+    { type: "number", minimum: -1000000000, maximum: 1000000000 },
+    shaderColor,
+    vectorSchema(["x", "y"]),
+    vectorSchema(["x", "y", "x2", "y2"]),
+    vectorSchema(["x", "y", "radius"]),
+    vectorSchema(["x", "y", "radius", "angle"]),
+    {
+      type: "object", additionalProperties: false,
+      properties: { x: { type: "number" }, y: { type: "number" }, color: shaderColor },
+      required: ["x", "y", "color"]
+    },
+    {
+      type: "object", additionalProperties: false,
+      properties: {
+        stops: {
+          type: "array", minItems: 2, maxItems: 32,
+          items: {
+            type: "object", additionalProperties: false,
+            properties: { position: { type: "number", minimum: 0, maximum: 1 }, color: shaderColor },
+            required: ["position", "color"]
+          }
+        }
+      },
+      required: ["stops"]
+    }
+  ]
+};
+const shaderProperties = {
+  type: "object",
+  maxProperties: 64,
+  propertyNames: { minLength: 1, maxLength: 256 },
+  additionalProperties: shaderPropertyValue
+};
 const placement = {
   parentId: nodeId,
   index: { type: "integer", minimum: 0, maximum: 100000 },
@@ -220,6 +258,23 @@ const tools = [
     effects: { type: "array", maxItems: 16, items: effect },
     typography: { type: "object", maxProperties: 12, additionalProperties: true }
   }, idempotentMutation, ["nodeId"]),
+  tool("list_shaders", "List shader fills and effects available to the connected file, including property definitions for imported shaders.", {
+    clientId,
+    query: { type: "string", maxLength: 256 },
+    type: { type: "string", enum: ["fill", "effect"] },
+    limit: { type: "integer", minimum: 1, maximum: 200 }
+  }, readOnly),
+  tool("apply_shader", "Import an available shader when needed and apply it to fills, strokes, or effects on exact nodes as one Undo transaction.", {
+    clientId,
+    nodeIds: idArray(),
+    shaderId: { type: "string", minLength: 1, maxLength: 512 },
+    target: { type: "string", enum: ["FILL", "STROKE", "EFFECT"], description: "Defaults to FILL for fill shaders and EFFECT for effect shaders." },
+    properties: shaderProperties,
+    mode: { type: "string", enum: ["REPLACE_SHADERS", "APPEND", "REPLACE_ALL"], description: "Defaults to REPLACE_SHADERS, preserving non-shader paints or effects." },
+    visible: { type: "boolean" },
+    opacity: { type: "number", minimum: 0, maximum: 1 },
+    blendMode: { type: "string", maxLength: 40 }
+  }, mutation, ["nodeIds", "shaderId"]),
   tool("create_components", "Create empty components or convert exact scene nodes to components.", {
     clientId,
     components: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false, properties: { nodeId, name: { type: "string", maxLength: 256 }, ...placement, width: { type: "number", minimum: 1, maximum: 100000 }, height: { type: "number", minimum: 1, maximum: 100000 }, variantProperties: stringProperties } } }
@@ -348,6 +403,8 @@ async function callTool(name, args) {
     update_nodes: "nodes.update",
     set_auto_layout: "nodes.autoLayout",
     set_visual_properties: "nodes.visual",
+    list_shaders: "shaders.list",
+    apply_shader: "shaders.apply",
     create_components: "components.create",
     create_component_set: "components.createSet",
     create_instances: "instances.create",
@@ -376,6 +433,15 @@ async function callTool(name, args) {
     ] };
   }
   return textResult(response);
+}
+
+function vectorSchema(keys) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: Object.fromEntries(keys.map(key => [key, { type: "number", minimum: -1000000, maximum: 1000000 }])),
+    required: keys
+  };
 }
 
 function request(method, params = {}) {

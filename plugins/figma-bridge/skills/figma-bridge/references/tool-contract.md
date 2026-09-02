@@ -7,6 +7,8 @@
 - `update_nodes` supports name, position, size, visibility, opacity, solid RGB fill, and text characters only.
 - `set_auto_layout` covers direction, gap, padding, alignment, and axis sizing on frame-like nodes.
 - `set_visual_properties` covers corners, solid/gradient paints, strokes, shadows/blurs, and text typography.
+- `list_shaders` reads the shaders available to the current file. Property definitions are present once a shader is imported.
+- `apply_shader` imports one exact available shader when necessary and applies it to up to 100 exact nodes as a fill, stroke, or effect in one rollback-protected Undo transaction. Property keys may be definition IDs or unique names; variable aliases are not accepted yet.
 - Component tools create components, combine variants, create instances, and set instance component properties.
 - Structure tools duplicate, move/reparent, reorder, group, and ungroup exact node IDs.
 - `upsert_design_tokens` creates or updates a local variable collection, modes, color/spacing/typography variables, and bound local paint/text styles. It does not publish team-library styles; the active Figma plan may limit a collection to one mode.

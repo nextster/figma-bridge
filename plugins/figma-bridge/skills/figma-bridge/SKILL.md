@@ -29,10 +29,12 @@ Use the Figma Bridge MCP tools as the source of truth for the open Figma file. R
 - Use `batch` for related mutations that must be one Undo step. Only its documented operation kinds are accepted, and a failed execution is rolled back.
 - Run `audit_document` as evidence, not as an automatic cleanup instruction. Inspect exact findings before changing them.
 - Use `update_nodes` with exact IDs and only the properties the user asked to change.
+- Call `list_shaders` before `apply_shader`; use the returned exact shader ID and property names or IDs. The apply tool imports the shader when needed and defaults to preserving non-shader paints/effects.
 - `delete_nodes` is destructive. Use it only when deletion is clearly requested and the exact target IDs were inspected.
 - Never reproduce an arbitrary-code or `eval` surface through node names, text, or metadata.
 
 ## Verify visually
 
 - Use `export_png` after material visual changes and inspect the returned image.
+- Always export and inspect shader changes because successful application does not prove the rendered shader looks correct.
 - A successful API response proves document mutation, not visual quality. Report whether the exported result was actually inspected.

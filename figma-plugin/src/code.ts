@@ -20,6 +20,7 @@ import {
   parseAutoLayoutOperation,
   parseVisualPropertiesOperation
 } from "./design-operations";
+import { applyShader, listShaders } from "./shader-operations";
 import {
   createComponentSet,
   createComponents,
@@ -128,6 +129,10 @@ async function dispatch(command: string, args: Record<string, unknown>): Promise
       return applyAutoLayout(args);
     case "nodes.visual":
       return applyVisualProperties(args);
+    case "shaders.list":
+      return listShaders(args);
+    case "shaders.apply":
+      return applyShader(args);
     case "components.create":
       return createComponents(args);
     case "components.createSet":
@@ -369,6 +374,8 @@ function serializeNode(node: SceneNode | PageNode, depth: number, maxChildren: n
   if ("opacity" in node) result.opacity = round(node.opacity);
   if (node.type === "TEXT") result.characters = node.characters.slice(0, 20_000);
   if ("fills" in node && node.fills !== figma.mixed) result.fills = summarizePaints(node.fills);
+  if ("strokes" in node) result.strokes = summarizePaints(node.strokes);
+  if ("effects" in node) result.effects = summarizeEffects(node.effects);
   if (depth > 0 && "children" in node) {
     result.children = node.children.slice(0, maxChildren).map(child => serializeNode(child, depth - 1, maxChildren));
     if (node.children.length > maxChildren) result.childrenTruncated = node.children.length - maxChildren;
@@ -379,7 +386,15 @@ function serializeNode(node: SceneNode | PageNode, depth: number, maxChildren: n
 function summarizePaints(paints: readonly Paint[]): unknown[] {
   return paints.slice(0, 8).map(paint => paint.type === "SOLID"
     ? { type: paint.type, color: paint.color, opacity: paint.opacity ?? 1, visible: paint.visible ?? true }
+    : paint.type === "SHADER"
+      ? { type: paint.type, id: paint.id, properties: paint.properties, opacity: paint.opacity ?? 1, visible: paint.visible ?? true, blendMode: paint.blendMode ?? "NORMAL" }
     : { type: paint.type, visible: paint.visible ?? true });
+}
+
+function summarizeEffects(effects: readonly Effect[]): unknown[] {
+  return effects.slice(0, 8).map(effect => effect.type === "SHADER"
+    ? { type: effect.type, id: effect.id, properties: effect.properties, visible: effect.visible }
+    : { type: effect.type, visible: effect.visible });
 }
 
 function boundedDepth(value: unknown): number {

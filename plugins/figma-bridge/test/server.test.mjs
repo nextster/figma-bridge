@@ -74,11 +74,13 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   write(child, 12, "tools/call", { name: "batch", arguments: { clientId: "file:page", dryRun: true, operations: [{ kind: "applyAutoLayout", args: { nodeId: "1:2", gap: 8 } }] } });
   write(child, 13, "tools/call", { name: "list_design_tokens", arguments: { clientId: "file:page", collectionName: "Tokens" } });
   write(child, 14, "tools/call", { name: "delete_design_tokens", arguments: { clientId: "file:page", collectionIds: ["VariableCollectionId:1:2"] } });
-  await waitUntil(() => responses.length === 14);
+  write(child, 15, "tools/call", { name: "list_shaders", arguments: { clientId: "file:page", type: "fill" } });
+  write(child, 16, "tools/call", { name: "apply_shader", arguments: { clientId: "file:page", nodeIds: ["1:2"], shaderId: "shader:glass", properties: { Frost: 0.4 } } });
+  await waitUntil(() => responses.length === 16);
 
   const byId = id => responses.find(response => response.id === id);
   const tools = byId(2).result.tools;
-  assert.equal(tools.length, 32);
+  assert.equal(tools.length, 34);
   assert.equal(tools.find(tool => tool.name === "delete_nodes").annotations.destructiveHint, true);
   assert.equal(tools.find(tool => tool.name === "snapshot").annotations.readOnlyHint, true);
   assert.equal(tools.find(tool => tool.name === "update_nodes").annotations.idempotentHint, true);
@@ -87,6 +89,8 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   assert.equal(tools.find(tool => tool.name === "replace_text").inputSchema.properties.dryRun.type, "boolean");
   assert.equal(tools.find(tool => tool.name === "batch").inputSchema.properties.operations.maxItems, 100);
   assert.equal(tools.find(tool => tool.name === "delete_design_tokens").annotations.destructiveHint, true);
+  assert.equal(tools.find(tool => tool.name === "list_shaders").annotations.readOnlyHint, true);
+  assert.equal(tools.find(tool => tool.name === "apply_shader").inputSchema.properties.properties.maxProperties, 64);
   assert.match(byId(3).result.content[0].text, /0.1.0/);
   assert.equal(byId(7).result.content[1].type, "image");
   assert.deepEqual(requests.find(request => request.params?.command === "document.pages").params, {
@@ -111,6 +115,8 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   assert.equal(requests.find(request => request.params?.command === "batch.execute").params.arguments.dryRun, true);
   assert.deepEqual(requests.find(request => request.params?.command === "designTokens.inspect").params.arguments, { collectionName: "Tokens" });
   assert.deepEqual(requests.find(request => request.params?.command === "designTokens.delete").params.arguments, { collectionIds: ["VariableCollectionId:1:2"] });
+  assert.deepEqual(requests.find(request => request.params?.command === "shaders.list").params.arguments, { type: "fill" });
+  assert.deepEqual(requests.find(request => request.params?.command === "shaders.apply").params.arguments, { nodeIds: ["1:2"], shaderId: "shader:glass", properties: { Frost: 0.4 } });
 });
 
 function write(child, id, method, params) {
