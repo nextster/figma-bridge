@@ -3,7 +3,7 @@ import { nodeIds, numberIn, optionalNumber, optionalString, stringIn } from "./v
 
 const MAX_SHADERS = 200;
 const MAX_PROPERTIES = 64;
-const SHADER_DISCOVERY_TIMEOUT_MS = 20_000;
+const SHADER_API_TIMEOUT_MS = 5_000;
 const BLEND_MODES = [
   "PASS_THROUGH", "NORMAL", "DARKEN", "MULTIPLY", "LINEAR_BURN", "COLOR_BURN",
   "LIGHTEN", "SCREEN", "LINEAR_DODGE", "COLOR_DODGE", "OVERLAY", "SOFT_LIGHT",
@@ -15,6 +15,14 @@ type ApplyMode = "REPLACE_SHADERS" | "APPEND" | "REPLACE_ALL";
 type PaintTarget = SceneNode & MinimalFillsMixin;
 type StrokeTarget = SceneNode & MinimalStrokesMixin;
 type EffectTarget = SceneNode & BlendMixin;
+
+type DocumentShaderOccurrence = {
+  id: string;
+  type: "fill" | "effect";
+  target: ShaderTarget;
+  properties?: Readonly<Record<string, ShaderPropertyValue>>;
+  sourceNode: { id: string; name: string; type: string };
+};
 
 type ApplyShaderOperation = {
   nodeIds: string[];
@@ -33,12 +41,32 @@ export async function listShaders(args: Record<string, unknown>): Promise<Record
   const query = optionalString(args.query, 256, "query")?.toLocaleLowerCase();
   const type = args.type === undefined ? undefined : enumValue(args.type, ["fill", "effect"], "type");
   const limit = Math.round(optionalNumber(args.limit, 1, MAX_SHADERS, "limit") ?? 100);
-  const shaders = (await availableShaders())
-    .filter(shader => (!query || shader.name.toLocaleLowerCase().includes(query)) && (!type || shader.type === type));
+  const occurrences = documentShaderOccurrences();
+  let available: Shader[] = [];
+  let warning: string | undefined;
+  try {
+    available = await availableShaders();
+  } catch (error) {
+    warning = errorMessage(error);
+  }
+  const knownIds = new Set(available.map(shader => shader.id));
+  const documentOnly = occurrences.filter(occurrence => !knownIds.has(occurrence.id));
+  const shaders = [
+    ...available.map(shaderSummary),
+    ...documentOnly.map(documentShaderSummary)
+  ].filter(shader => {
+    const haystack = [shader.name, shader.id, shader.sourceNode?.name]
+      .filter(value => typeof value === "string")
+      .join("\n")
+      .toLocaleLowerCase();
+    return (!query || haystack.includes(query)) && (!type || shader.type === type);
+  });
   return {
-    shaders: shaders.slice(0, limit).map(shaderSummary),
+    shaders: shaders.slice(0, limit),
     total: shaders.length,
-    truncated: Math.max(0, shaders.length - limit)
+    truncated: Math.max(0, shaders.length - limit),
+    fallbackScope: documentOnly.length > 0 ? "current-page" : undefined,
+    warning
   };
 }
 
@@ -62,34 +90,56 @@ export async function applyShader(args: Record<string, unknown>): Promise<Record
   const operation = parseApplyShaderOperation(args);
   assertShaderApi();
   return withUndoTransaction(async () => {
-    const available = await availableShaders();
-    const discovered = available.find(shader => shader.id === operation.shaderId);
-    if (!discovered) throw new Error(`shader not available to this file: ${operation.shaderId}`);
-    const shader = discovered.imported ? discovered : await figma.importShaderById(discovered.id);
-    const target = operation.target ?? (shader.type === "effect" ? "EFFECT" : "FILL");
-    if (shader.type === "effect" && target !== "EFFECT") throw new Error(`${shader.name} is an effect shader and requires target EFFECT`);
-    if (shader.type === "fill" && target === "EFFECT") throw new Error(`${shader.name} is a fill shader and requires target FILL or STROKE`);
+    const occurrence = documentShaderOccurrences().find(item => item.id === operation.shaderId);
+    let shader: Shader | undefined;
+    let discoveryWarning: string | undefined;
+    try {
+      const available = await availableShaders();
+      const discovered = available.find(item => item.id === operation.shaderId);
+      shader = discovered
+        ? (discovered.imported ? discovered : await importShader(discovered.id))
+        : await importShader(operation.shaderId);
+    } catch (error) {
+      discoveryWarning = errorMessage(error);
+    }
+    if (!shader && !occurrence) {
+      throw new Error(`shader is unavailable through Figma's API and was not found on the current page: ${operation.shaderId}${discoveryWarning ? ` (${discoveryWarning})` : ""}`);
+    }
+
+    const shaderType = shader?.type ?? occurrence!.type;
+    const shaderName = shader?.name ?? `Imported shader ${operation.shaderId}`;
+    const target = operation.target ?? (shaderType === "effect" ? "EFFECT" : occurrence?.target ?? "FILL");
+    if (shaderType === "effect" && target !== "EFFECT") throw new Error(`${shaderName} is an effect shader and requires target EFFECT`);
+    if (shaderType === "fill" && target === "EFFECT") throw new Error(`${shaderName} is a fill shader and requires target FILL or STROKE`);
     if (target === "EFFECT" && (operation.opacity !== undefined || operation.blendMode !== undefined)) {
       throw new Error("opacity and blendMode are only supported for shader fills or strokes");
     }
 
-    const properties = resolveProperties(operation.properties, shader.propertyDefinitions);
+    const requestedProperties = Object.keys(operation.properties).length > 0;
+    if (!shader && requestedProperties) {
+      throw new Error("Figma did not return shader property definitions; reuse the existing values or edit this shader in Figma");
+    }
+    const properties = shader
+      ? resolveProperties(operation.properties, shader.propertyDefinitions)
+      : occurrence?.properties;
     const nodes = await Promise.all(operation.nodeIds.map(requireSceneNode));
     for (const node of nodes) assertTarget(node, target);
 
     const shaderValue = target === "EFFECT"
-      ? { type: "SHADER", id: shader.id, properties, visible: operation.visible } as ShaderEffect
+      ? { type: "SHADER", id: operation.shaderId, properties, visible: operation.visible } as ShaderEffect
       : {
-          type: "SHADER", id: shader.id, properties, visible: operation.visible,
+          type: "SHADER", id: operation.shaderId, properties, visible: operation.visible,
           ...(operation.opacity === undefined ? {} : { opacity: operation.opacity }),
           ...(operation.blendMode === undefined ? {} : { blendMode: operation.blendMode })
         } as ShaderPaint;
 
     for (const node of nodes) applyToNode(node, target, operation.mode, shaderValue);
     return {
-      shader: shaderSummary(shader),
+      shader: shader ? shaderSummary(shader) : documentShaderSummary(occurrence!),
       target,
       mode: operation.mode,
+      fallback: shader ? undefined : "current-page",
+      warning: discoveryWarning,
       nodes: nodes.map(node => ({ id: node.id, name: node.name, type: node.type }))
     };
   });
@@ -221,6 +271,46 @@ function shaderSummary(shader: Shader): Record<string, unknown> {
   };
 }
 
+function documentShaderSummary(occurrence: DocumentShaderOccurrence): Record<string, any> {
+  return {
+    id: occurrence.id,
+    name: null,
+    type: occurrence.type,
+    imported: true,
+    propertyDefinitions: undefined,
+    properties: occurrence.properties,
+    sourceNode: occurrence.sourceNode,
+    sourceTarget: occurrence.target,
+    source: "document-fallback"
+  };
+}
+
+function documentShaderOccurrences(): DocumentShaderOccurrence[] {
+  const found = new Map<string, DocumentShaderOccurrence>();
+  for (const node of figma.currentPage.findAll()) {
+    const sourceNode = { id: node.id, name: node.name, type: node.type };
+    if ("fills" in node && node.fills !== figma.mixed) {
+      collectShaderValues(found, node.fills, "fill", "FILL", sourceNode);
+    }
+    if ("strokes" in node) collectShaderValues(found, node.strokes, "fill", "STROKE", sourceNode);
+    if ("effects" in node) collectShaderValues(found, node.effects, "effect", "EFFECT", sourceNode);
+  }
+  return [...found.values()];
+}
+
+function collectShaderValues(
+  found: Map<string, DocumentShaderOccurrence>,
+  values: readonly Paint[] | readonly Effect[],
+  type: "fill" | "effect",
+  target: ShaderTarget,
+  sourceNode: { id: string; name: string; type: string }
+): void {
+  for (const value of values) {
+    if (value.type !== "SHADER" || found.has(value.id)) continue;
+    found.set(value.id, { id: value.id, type, target, properties: value.properties, sourceNode });
+  }
+}
+
 async function requireSceneNode(id: string): Promise<SceneNode> {
   const node = await figma.getNodeByIdAsync(id);
   if (!node || node.type === "DOCUMENT" || node.type === "PAGE") throw new Error(`scene node not found: ${id}`);
@@ -234,15 +324,27 @@ function assertShaderApi(): void {
 }
 
 function availableShaders(): Promise<Shader[]> {
+  return withApiTimeout(figma.listAvailableShaders(), "listAvailableShaders");
+}
+
+function importShader(id: string): Promise<Shader> {
+  return withApiTimeout(figma.importShaderById(id), "importShaderById");
+}
+
+function withApiTimeout<T>(promise: Promise<T>, method: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(
-      "Figma Shader API did not respond within 20 seconds; update Figma Desktop and verify that this account has access to shaders"
-    )), SHADER_DISCOVERY_TIMEOUT_MS);
-    figma.listAvailableShaders().then(
-      shaders => { clearTimeout(timeout); resolve(shaders); },
+      `Figma ${method} did not respond within ${SHADER_API_TIMEOUT_MS / 1000} seconds`
+    )), SHADER_API_TIMEOUT_MS);
+    promise.then(
+      value => { clearTimeout(timeout); resolve(value); },
       error => { clearTimeout(timeout); reject(error); }
     );
   });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function record(value: unknown, name: string): Record<string, unknown> {

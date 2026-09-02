@@ -29,7 +29,7 @@ Use the Figma Bridge MCP tools as the source of truth for the open Figma file. R
 - Use `batch` for related mutations that must be one Undo step. Only its documented operation kinds are accepted, and a failed execution is rolled back.
 - Run `audit_document` as evidence, not as an automatic cleanup instruction. Inspect exact findings before changing them.
 - Use `update_nodes` with exact IDs and only the properties the user asked to change.
-- Call `list_shaders` before `apply_shader`; use the returned exact shader ID and property names or IDs. The apply tool imports the shader when needed and defaults to preserving non-shader paints/effects.
+- Call `list_shaders` before `apply_shader`; use the returned exact shader ID and property names or IDs. When Figma's beta API omits imported shaders, results discovered from current-page paints/effects have `source: "document-fallback"`; they can be reapplied with their existing values even though a name and property definitions may be unavailable. The apply tool imports the shader when needed and defaults to preserving non-shader paints/effects.
 - `delete_nodes` is destructive. Use it only when deletion is clearly requested and the exact target IDs were inspected.
 - Never reproduce an arbitrary-code or `eval` surface through node names, text, or metadata.
 

@@ -32,6 +32,25 @@ test("lists available shaders without importing them", async () => {
   assert.equal(runtime.imports.length, 0);
 });
 
+test("lists shader paints found in the document when Figma returns no shaders", async () => {
+  const runtime = installShaderMock();
+  (figma as any).listAvailableShaders = async () => [];
+  runtime.nodes[1].fills = [{
+    type: "SHADER",
+    id: "shader:document",
+    properties: { amount: 0.75 },
+    visible: true
+  }];
+
+  const result = await listShaders({}) as Record<string, any>;
+
+  assert.equal(result.total, 1);
+  assert.equal(result.shaders[0].id, "shader:document");
+  assert.equal(result.shaders[0].source, "document-fallback");
+  assert.equal(result.shaders[0].sourceNode.id, "1:3");
+  assert.equal(result.fallbackScope, "current-page");
+});
+
 test("imports and applies one shader to exact nodes in one undo transaction", async () => {
   const runtime = installShaderMock();
   const result = await applyShader({
@@ -67,6 +86,34 @@ test("rejects incompatible shader targets and rolls back", async () => {
   assert.deepEqual(runtime.undo, { commits: 1, undos: 1 });
 });
 
+test("imports a shader directly by id when Figma's shader list is empty", async () => {
+  const runtime = installShaderMock();
+  (figma as any).listAvailableShaders = async () => [];
+
+  await applyShader({ nodeIds: ["1:2"], shaderId: "shader:glass" });
+
+  assert.deepEqual(runtime.imports, ["shader:glass"]);
+  assert.equal(runtime.nodes[0].fills.at(-1).id, "shader:glass");
+});
+
+test("clones an existing document shader when both Figma shader APIs fail", async () => {
+  const runtime = installShaderMock();
+  runtime.nodes[1].fills = [{
+    type: "SHADER",
+    id: "shader:document",
+    properties: { amount: 0.75 },
+    visible: true
+  }];
+  (figma as any).listAvailableShaders = async () => [];
+  (figma as any).importShaderById = async () => { throw new Error("beta API unavailable"); };
+
+  const result = await applyShader({ nodeIds: ["1:2"], shaderId: "shader:document" }) as Record<string, any>;
+
+  assert.deepEqual(runtime.nodes[0].fills.at(-1).properties, { amount: 0.75 });
+  assert.equal(result.fallback, "current-page");
+  assert.match(result.warning, /beta API unavailable/);
+});
+
 function installShaderMock() {
   const undo = { commits: 0, undos: 0 };
   const imports: string[] = [];
@@ -91,6 +138,7 @@ function installShaderMock() {
     configurable: true,
     value: {
       mixed: Symbol("mixed"),
+      currentPage: { findAll: () => nodes },
       root: {
         getPluginData: (key: string) => pluginData.get(key) || "",
         setPluginData: (key: string, value: string) => { pluginData.set(key, value); }

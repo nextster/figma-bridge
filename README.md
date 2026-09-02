@@ -31,7 +31,7 @@ The bridge is intentionally local. It has no cloud relay, Figma personal access 
 - Delete explicitly identified nodes.
 - Export a node or selection as PNG.
 
-Shader properties can be supplied by their stable property-definition ID or by a unique property name returned by `list_shaders`. `apply_shader` imports the selected shader into the current file when needed and defaults to replacing only existing shaders, preserving ordinary paints and effects.
+Shader properties can be supplied by their stable property-definition ID or by a unique property name returned by `list_shaders`. If Figma's beta discovery API omits an imported shader, `list_shaders` falls back to shader paints and effects found on the current page; `apply_shader` can clone their existing values by ID. It otherwise imports the selected shader when needed and defaults to replacing only existing shaders, preserving ordinary paints and effects.
 
 Domain-specific generators, such as an exact SDF smooth-union generator, are intentionally not coupled to the transport layer. Add them as focused bridge commands without widening the generic document API.
 
