@@ -1,45 +1,77 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
-import net from "node:net";
+import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { controlSocketPath, stateDirectory } from "./paths.mjs";
-import { ensureState } from "./state.mjs";
+import {
+  controlEndpoint,
+  createControlServer,
+  ensureState,
+  isPipeEndpoint,
+  stateDirectory
+} from "../../plugins/figma-bridge/mcp/control.mjs";
+import { cleanError, createFigmaHub } from "./hub.mjs";
 
 const VERSION = "0.1.0";
 const DEFAULT_PORT = 3847;
-const MAX_LINE_BYTES = 2 * 1024 * 1024;
 const MAX_WS_BYTES = 8 * 1024 * 1024;
-const RPC_TIMEOUT_MS = 30_000;
+const STARTUP_CLIENT_WAIT_MS = 4000;
+const STARTUP_WINDOW_MS = 15_000;
 
 export async function startBridgeServer(options = {}) {
   const env = options.env || process.env;
+  const platform = options.platform || process.platform;
   const logger = options.logger || console;
-  const state = ensureState(env);
-  const socketPath = controlSocketPath(env);
   const port = Number(options.port ?? env.FIGMA_BRIDGE_PORT ?? DEFAULT_PORT);
-  const clients = new Map();
-  const pending = new Map();
-  const approvePairing = options.approvePairing || requestLocalPairingApproval;
-  let activeClientId = null;
-  let nextRequestId = 1;
+  const approvePairing = options.approvePairing || createPairingApprover({ platform, env, logger });
+  const startedAt = Date.now();
+  const hub = createFigmaHub();
   let pairingInProgress = false;
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid FIGMA_BRIDGE_PORT");
-  fs.mkdirSync(stateDirectory(env), { recursive: true, mode: 0o700 });
-  if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
 
-  const httpServer = http.createServer((request, response) => {
-    if (request.url === "/health") {
-      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(`${JSON.stringify({ ok: true, version: VERSION, clients: clients.size })}\n`);
-      return;
-    }
-    response.writeHead(404, { "content-type": "text/plain" });
-    response.end("Not found\n");
+  const websocketServer = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_BYTES });
+  const httpServers = [];
+  // Owning the loopback port is the single-instance lock. Bind it before
+  // touching state or the control endpoint so a second companion cannot
+  // replace the endpoint of a running one.
+  httpServers.push(await listenHttp("127.0.0.1"));
+  const ipv6 = await listenHttp("::1").catch(error => {
+    logger.info?.(`Figma Bridge IPv6 loopback unavailable: ${error.code || cleanError(error)}`);
+    return null;
   });
-  const websocketServer = new WebSocketServer({ server: httpServer, path: "/bridge", maxPayload: MAX_WS_BYTES });
+  if (ipv6) httpServers.push(ipv6);
+
+  let state;
+  let endpoint;
+  let controlServer;
+  let ownedSocket = null;
+  try {
+    state = ensureState(env, platform);
+    endpoint = controlEndpoint({ env, platform, state });
+    controlServer = createControlServer({ secret: state.controlSecret, dispatch });
+    if (!isPipeEndpoint(endpoint)) {
+      fs.mkdirSync(stateDirectory(env), { recursive: true, mode: 0o700 });
+      fs.rmSync(endpoint, { force: true });
+    }
+    await new Promise((resolve, reject) => {
+      controlServer.once("error", reject);
+      controlServer.listen(endpoint, resolve);
+    });
+    if (!isPipeEndpoint(endpoint)) {
+      fs.chmodSync(endpoint, 0o600);
+      ownedSocket = fs.statSync(endpoint);
+    }
+  } catch (error) {
+    // Release the port so a failed start does not leave a process that blocks the next one.
+    await Promise.all(httpServers.map(server => new Promise(resolve => server.close(() => resolve()))));
+    controlServer?.close();
+    throw error;
+  }
+  logger.info?.(`Figma Bridge ${VERSION} listening on 127.0.0.1:${port}${ipv6 ? ` and [::1]:${port}` : ""}`);
 
   websocketServer.on("connection", (websocket, request) => {
     let authenticatedClientId = null;
@@ -78,7 +110,7 @@ export async function startBridgeServer(options = {}) {
             websocket.close(4403, "pairing denied");
             return;
           }
-          authenticatedClientId = authenticateClient(websocket, message.client);
+          authenticatedClientId = hub.register(websocket, message.client);
           websocket.send(JSON.stringify({ type: "pair.ok", token: state.token }));
           websocket.send(JSON.stringify({ type: "auth.ok", clientId: authenticatedClientId, version: VERSION }));
           return;
@@ -88,168 +120,145 @@ export async function startBridgeServer(options = {}) {
           return;
         }
         clearTimeout(authenticationTimeout);
-        authenticatedClientId = authenticateClient(websocket, message.client);
+        authenticatedClientId = hub.register(websocket, message.client);
         websocket.send(JSON.stringify({ type: "auth.ok", clientId: authenticatedClientId, version: VERSION }));
         return;
       }
 
-      if (message.type === "client.update") {
-        const client = clients.get(authenticatedClientId);
-        if (client) client.info = sanitizeClientInfo({ ...client.info, ...message.client }, authenticatedClientId);
-        return;
-      }
-
-      if (message.type === "rpc.response" && typeof message.id === "string") {
-        const entry = pending.get(message.id);
-        if (!entry || entry.clientId !== authenticatedClientId) return;
-        pending.delete(message.id);
-        clearTimeout(entry.timeout);
-        if (message.ok) entry.resolve(message.result);
-        else entry.reject(new Error(cleanError(message.error)));
-      }
-    }
-
-    function authenticateClient(socket, rawClient) {
-      const clientId = normalizeClientId(rawClient?.id);
-      const info = sanitizeClientInfo(rawClient, clientId);
-      clients.set(clientId, { websocket: socket, info, connectedAt: new Date().toISOString() });
-      activeClientId = clientId;
-      return clientId;
+      hub.handleMessage(authenticatedClientId, websocket, message);
     }
 
     websocket.on("close", () => {
       clearTimeout(authenticationTimeout);
-      if (!authenticatedClientId) return;
-      const current = clients.get(authenticatedClientId);
-      if (current?.websocket === websocket) clients.delete(authenticatedClientId);
-      if (activeClientId === authenticatedClientId) activeClientId = [...clients.keys()].at(-1) || null;
-      for (const [id, entry] of pending) {
-        if (entry.clientId !== authenticatedClientId) continue;
-        pending.delete(id);
-        clearTimeout(entry.timeout);
-        entry.reject(new Error("Figma plugin disconnected"));
-      }
+      if (authenticatedClientId) hub.unregister(authenticatedClientId, websocket);
     });
   });
-
-  const controlServer = net.createServer(socket => {
-    socket.setEncoding("utf8");
-    let buffer = "";
-    socket.on("data", chunk => {
-      buffer += chunk;
-      if (Buffer.byteLength(buffer, "utf8") > MAX_LINE_BYTES) {
-        socket.destroy(new Error("control request exceeded 2 MiB"));
-        return;
-      }
-      let newline;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        if (line.trim()) void handleControlLine(socket, line);
-      }
-    });
-  });
-
-  async function handleControlLine(socket, line) {
-    let request;
-    try {
-      request = JSON.parse(line);
-      const result = await dispatch(request.method, request.params || {});
-      socket.write(`${JSON.stringify({ id: request.id ?? null, ok: true, result })}\n`);
-    } catch (error) {
-      socket.write(`${JSON.stringify({ id: request?.id ?? null, ok: false, error: cleanError(error) })}\n`);
-    }
-  }
 
   async function dispatch(method, params) {
     if (method === "bridge.status") {
       return {
         version: VERSION,
         pid: process.pid,
-        socketPath,
-        websocket: `ws://127.0.0.1:${port}/bridge`,
-        clients: publicClients(clients),
-        activeClientId
+        platform,
+        runtime: { source: env.FIGMA_BRIDGE_ACTIVE_SOURCE || "direct", entrypoint: env.FIGMA_BRIDGE_ACTIVE_ENTRYPOINT || null },
+        controlEndpoint: endpoint,
+        websocket: `ws://localhost:${port}/bridge`,
+        clients: hub.publicClients(),
+        activeClientId: hub.activeClientId
       };
     }
-    if (method === "clients.list") return publicClients(clients);
+    if (method === "clients.list") return hub.publicClients();
     if (method === "figma.call") {
       if (typeof params.command !== "string" || !params.command) throw new Error("command is required");
-      return requestFigma(params.clientId || activeClientId, params.command, params.arguments || {});
+      const waitForClientMs = Date.now() - startedAt < STARTUP_WINDOW_MS ? STARTUP_CLIENT_WAIT_MS : 0;
+      return hub.request(params.clientId, params.command, params.arguments || {}, { waitForClientMs });
+    }
+    if (method === "bridge.shutdown") {
+      setImmediate(() => void close().then(() => options.onShutdown?.()));
+      return { stopping: true, pid: process.pid };
     }
     throw new Error(`unknown bridge method: ${method || "<missing>"}`);
   }
 
-  function requestFigma(clientId, command, args) {
-    if (!clientId) throw new Error("No Figma plugin is connected. Run Figma Bridge in the target Figma file.");
-    const client = clients.get(clientId);
-    if (!client || client.websocket.readyState !== client.websocket.OPEN) {
-      throw new Error(`Figma client is not connected: ${clientId}`);
-    }
-    const id = `rpc-${process.pid}-${nextRequestId++}`;
+  function listenHttp(host) {
+    const server = http.createServer((request, response) => {
+      if (request.url === "/health") {
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(`${JSON.stringify({ ok: true, version: VERSION, clients: hub.size })}\n`);
+        return;
+      }
+      response.writeHead(404, { "content-type": "text/plain" });
+      response.end("Not found\n");
+    });
+    server.on("upgrade", (request, socket, head) => {
+      if (new URL(request.url || "/", "http://localhost").pathname !== "/bridge") {
+        socket.destroy();
+        return;
+      }
+      websocketServer.handleUpgrade(request, socket, head, websocket => websocketServer.emit("connection", websocket, request));
+    });
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        pending.delete(id);
-        reject(new Error(`Figma command timed out after ${RPC_TIMEOUT_MS} ms: ${command}`));
-      }, RPC_TIMEOUT_MS);
-      pending.set(id, { clientId, resolve, reject, timeout });
-      client.websocket.send(JSON.stringify({ type: "rpc.request", id, command, arguments: args }));
+      server.once("error", reject);
+      server.listen({ port, host, ipv6Only: host === "::1" }, () => {
+        server.off("error", reject);
+        resolve(server);
+      });
     });
   }
 
-  await Promise.all([
-    new Promise((resolve, reject) => {
-      httpServer.once("error", reject);
-      httpServer.listen(port, "127.0.0.1", resolve);
-    }),
-    new Promise((resolve, reject) => {
-      controlServer.once("error", reject);
-      controlServer.listen(socketPath, resolve);
-    })
-  ]);
-  fs.chmodSync(socketPath, 0o600);
-  const ownedSocket = fs.statSync(socketPath);
-  logger.info?.(`Figma Bridge ${VERSION} listening on 127.0.0.1:${port}`);
-
-  async function close() {
-    for (const client of clients.values()) client.websocket.close(1001, "bridge shutting down");
-    await Promise.all([
-      new Promise(resolve => websocketServer.close(() => resolve())),
-      new Promise(resolve => httpServer.close(() => resolve())),
-      new Promise(resolve => controlServer.close(() => resolve()))
-    ]);
-    try {
-      const currentSocket = fs.statSync(socketPath);
-      if (currentSocket.dev === ownedSocket.dev && currentSocket.ino === ownedSocket.ino) fs.unlinkSync(socketPath);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
+  let closing = null;
+  function close() {
+    closing ||= (async () => {
+      hub.closeAll(1001, "bridge shutting down");
+      for (const client of websocketServer.clients) client.terminate();
+      await Promise.all([
+        new Promise(resolve => websocketServer.close(() => resolve())),
+        ...httpServers.map(server => new Promise(resolve => server.close(() => resolve()))),
+        new Promise(resolve => controlServer.close(() => resolve()))
+      ]);
+      if (!ownedSocket) return;
+      try {
+        const currentSocket = fs.statSync(endpoint);
+        if (currentSocket.dev === ownedSocket.dev && currentSocket.ino === ownedSocket.ino) fs.unlinkSync(endpoint);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    })();
+    return closing;
   }
 
-  return { close, port, socketPath, token: state.token };
+  return { close, port, controlEndpoint: endpoint, socketPath: endpoint, token: state.token, controlSecret: state.controlSecret };
 }
 
 function isAllowedPairingOrigin(origin) {
   return origin === "null" || origin === "https://www.figma.com";
 }
 
-function requestLocalPairingApproval() {
-  const script = `display dialog "Figma Bridge wants to connect the open Figma plugin to Codex. Approve only if you just clicked Connect in Figma." with title "Figma Bridge" buttons {"Cancel", "Connect"} default button "Connect" cancel button "Cancel" with icon note giving up after 30`;
-  return new Promise((resolve, reject) => {
-    const child = spawn("/usr/bin/osascript", ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+const PAIRING_PROMPT = "Figma Bridge wants to connect the open Figma plugin to your AI app. Approve only if you just clicked Connect in Figma.";
+
+/** Returns the platform's native approval dialog command, or null when none exists. */
+export function pairingDialogCommand(platform = process.platform, env = process.env) {
+  if (platform === "darwin") {
+    const script = `display dialog "${PAIRING_PROMPT}" with title "Figma Bridge" buttons {"Cancel", "Connect"} default button "Connect" cancel button "Cancel" with icon note giving up after 30`;
+    return {
+      command: "/usr/bin/osascript",
+      args: ["-e", script],
+      approved: (code, output) => code === 0 && output.includes("button returned:Connect") && !output.includes("gave up:true")
+    };
+  }
+  if (platform === "win32") {
+    // WScript.Shell.Popup: 1 = OK/Cancel, 32 = question icon, 4096 = system modal; 30 s timeout returns -1.
+    const script = [
+      "$shell = New-Object -ComObject WScript.Shell",
+      `$result = $shell.Popup('${PAIRING_PROMPT.replaceAll("'", "''")}', 30, 'Figma Bridge', 4129)`,
+      "[Console]::Out.Write([string]$result)"
+    ].join("\n");
+    const systemRoot = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
+    return {
+      command: path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      approved: (code, output) => code === 0 && output.trim() === "1"
+    };
+  }
+  return null;
+}
+
+function createPairingApprover({ platform, env, logger }) {
+  const dialog = pairingDialogCommand(platform, env);
+  if (!dialog) {
+    return async () => {
+      logger.error?.("Automatic pairing needs a desktop approval dialog, which is unavailable on this platform. Run `npm run bridge -- pair` and paste the token into the plugin.");
+      return false;
+    };
+  }
+  return () => new Promise((resolve, reject) => {
+    const child = spawn(dialog.command, dialog.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let output = "";
-    let errorOutput = "";
     child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
     child.stdout.on("data", chunk => { output = (output + chunk).slice(-4096); });
-    child.stderr.on("data", chunk => { errorOutput = (errorOutput + chunk).slice(-4096); });
+    child.stderr.resume();
     child.once("error", reject);
-    child.once("close", code => {
-      if (code === 0) resolve(output.includes("button returned:Connect") && !output.includes("gave up:true"));
-      else if (code === 1 && errorOutput.includes("User canceled")) resolve(false);
-      else if (code === 1) resolve(false);
-      else reject(new Error(`pairing approval exited with status ${code}`));
-    });
+    child.once("close", code => resolve(dialog.approved(code, output)));
   });
 }
 
@@ -257,44 +266,29 @@ function constantTimeEqual(first, second) {
   if (typeof first !== "string" || typeof second !== "string") return false;
   const a = Buffer.from(first);
   const b = Buffer.from(second);
-  return a.length === b.length && cryptoSafeEqual(a, b);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function cryptoSafeEqual(first, second) {
-  let difference = 0;
-  for (let index = 0; index < first.length; index += 1) difference |= first[index] ^ second[index];
-  return difference === 0;
+export function isMainModule(moduleUrl, entry = process.argv[1]) {
+  if (!entry) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(moduleUrl)) === fs.realpathSync(entry);
+  } catch {
+    return false;
+  }
 }
 
-function normalizeClientId(value) {
-  const cleaned = typeof value === "string" ? value.replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 128) : "";
-  return cleaned || `figma-${Date.now().toString(36)}`;
-}
-
-function sanitizeClientInfo(value, id) {
-  return {
-    id,
-    fileName: cleanString(value?.fileName, 256) || "Untitled",
-    pageName: cleanString(value?.pageName, 256) || "Unknown page",
-    editorType: cleanString(value?.editorType, 32) || "figma"
-  };
-}
-
-function publicClients(clients) {
-  return [...clients.values()].map(client => ({ ...client.info, connectedAt: client.connectedAt }));
-}
-
-function cleanString(value, max) {
-  return typeof value === "string" ? value.slice(0, max) : "";
-}
-
-function cleanError(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/[\r\n]+/g, " ").slice(0, 1000);
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const server = await startBridgeServer();
+if (isMainModule(import.meta.url)) {
+  let server;
+  try {
+    server = await startBridgeServer({ onShutdown: () => process.exit(0) });
+  } catch (error) {
+    if (error?.code === "EADDRINUSE") {
+      console.error("Figma Bridge companion is already running.");
+      process.exit(0);
+    }
+    throw error;
+  }
   const shutdown = async () => {
     await server.close();
     process.exit(0);

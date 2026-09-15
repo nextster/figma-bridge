@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { requestControl } from "./client.mjs";
-import { ensureState } from "./state.mjs";
+import { ensureState, requestControl } from "../../plugins/figma-bridge/mcp/control.mjs";
 
 const command = process.argv[2] || "status";
 

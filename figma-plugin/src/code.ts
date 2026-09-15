@@ -87,9 +87,13 @@ figma.ui.onmessage = async (message: CommandMessage | { type: "save-token" | "st
 figma.on("selectionchange", () => figma.ui.postMessage({ type: "client-update", client: clientInfo() }));
 figma.on("currentpagechange", () => figma.ui.postMessage({ type: "client-update", client: clientInfo() }));
 
+// figma.fileKey is only available to private plugins, and page IDs repeat
+// across files, so each plugin run gets its own connection identity.
+const instanceId = `${figma.fileKey || "file"}-${Math.random().toString(36).slice(2, 10)}`;
+
 function clientInfo(): Record<string, string> {
   return {
-    id: `${figma.fileKey || "local"}:${figma.currentPage.id}`,
+    id: instanceId,
     fileName: figma.root.name,
     pageName: figma.currentPage.name,
     editorType: figma.editorType
