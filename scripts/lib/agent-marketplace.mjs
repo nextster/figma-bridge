@@ -1,6 +1,7 @@
-// Codex registration through the Nextster marketplace shared by all bridge
-// installers. Adapted from Chromium Bridge's scripts/agent-clients.mjs so both
-// installers migrate and register the shared root the same way.
+// Codex and Claude Code registration through the Nextster marketplace shared by
+// all bridge installers. One plugin directory carries both client manifests.
+// Adapted from Chromium Bridge's scripts/agent-clients.mjs so the installers
+// migrate and register the shared root the same way.
 
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,10 @@ export const PLUGIN_NAME = "figma-bridge";
 export const PLUGIN_ID = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
 
 const CODEX_MANIFEST = [".agents", "plugins", "marketplace.json"];
+const CLAUDE_MANIFEST = [".claude-plugin", "marketplace.json"];
+const MARKETPLACE_DESCRIPTION = "Local plugins for Codex and Claude Code installed by Nextster bridge installers.";
+// Earlier builds of this installer registered Claude Code from a private marketplace.
+const LEGACY_CLAUDE_MARKETPLACE = "figma-bridge-local";
 const OBSOLETE_CODEX_REGISTRATIONS = [
   ["plugin", "remove", "figma-bridge@figma-bridge-repo", "--json"],
   ["plugin", "marketplace", "remove", "figma-bridge-repo", "--json"]
@@ -42,22 +47,42 @@ export function marketplaceLocations({ env = process.env, homedir = os.homedir()
 }
 
 /**
- * Detaches Codex from the legacy root before it moves, migrates it, installs
- * this plugin, and registers the shared root. A failure after detaching
- * restores whichever root still has a manifest so sibling plugins keep working.
+ * Installs the plugin into the shared root and registers every available
+ * client. Codex is detached from a legacy root before it moves; a failure
+ * afterwards restores whichever root still has a manifest so sibling plugins
+ * keep working.
  */
-export async function installCodexPlugin({ projectDir, mcpConfig, locations, codexPath = "codex", run }) {
+export async function installForClients({ projectDir, mcpConfig, locations, codex = null, claude = null }) {
   const { root, legacyRoot } = locations;
-  const detached = await detachCodexMarketplace({ codexPath, root, legacyRoot, run });
+  const detached = codex ? await detachCodexMarketplace({ codexPath: codex.path, root, legacyRoot, run: codex.run }) : null;
   try {
     const migration = await migrateLegacyMarketplace({ root, legacyRoot });
     const installed = await installSharedPlugin({ root, projectDir, mcpConfig });
-    const registration = await registerCodex({ codexPath, root, run });
-    return { root, detached, migration, pluginPath: installed.pluginPath, registration };
+    const codexRegistration = codex ? await registerCodex({ codexPath: codex.path, root, run: codex.run }) : null;
+    const claudeRegistration = claude ? await registerClaudeCode({ claudePath: claude.path, root, run: claude.run }) : null;
+    return { root, detached, migration, pluginPath: installed.pluginPath, codex: codexRegistration, claude: claudeRegistration };
   } catch (error) {
-    await restoreCodexMarketplace({ codexPath, root, legacyRoot, run });
+    if (codex) await restoreCodexMarketplace({ codexPath: codex.path, root, legacyRoot, run: codex.run });
     throw error;
   }
+}
+
+/** Unregisters this plugin, removes it from both manifests, and releases registrations that became empty. */
+export async function uninstallFromClients({ locations, codex = null, claude = null }) {
+  const results = {};
+  if (codex) results.codex = [await runOptional(codex.run, codex.path, ["plugin", "remove", PLUGIN_ID, "--json"])];
+  if (claude) results.claude = [await runOptional(claude.run, claude.path, ["plugin", "uninstall", PLUGIN_ID, "--scope", "user"])];
+  const removal = await removeFromSharedMarketplace(locations.root);
+  results.removal = removal;
+  if (codex && removal.existed && removal.codexEmpty) {
+    results.codex.push(await runOptional(codex.run, codex.path, ["plugin", "marketplace", "remove", MARKETPLACE_NAME, "--json"]));
+  }
+  if (claude && removal.existed) {
+    results.claude.push(await runOptional(claude.run, claude.path, removal.claudeEmpty
+      ? ["plugin", "marketplace", "remove", MARKETPLACE_NAME]
+      : ["plugin", "marketplace", "update", MARKETPLACE_NAME]));
+  }
+  return results;
 }
 
 export async function migrateLegacyMarketplace({ root, legacyRoot }) {
@@ -102,11 +127,13 @@ export async function installSharedPlugin({ root, projectDir, mcpConfig }) {
   const source = path.join(projectDir, "plugins", PLUGIN_NAME);
   await mkdir(pluginsDir, { recursive: true, mode: 0o700 });
   await rm(temporaryDir, { recursive: true, force: true });
+  // Both clients read the same copy; the MCP server itself runs from the
+  // installed runtime or the relay, so the checkout sources are not copied.
   await cp(source, temporaryDir, {
     recursive: true,
     filter: item => {
       const segments = path.relative(source, item).split(path.sep);
-      return !segments.includes("test") && segments[0] !== ".claude-plugin";
+      return !segments.includes("test") && segments[0] !== "mcp";
     }
   });
   await writeJson(path.join(temporaryDir, ".mcp.json"), mcpConfig);
@@ -123,7 +150,98 @@ export async function installSharedPlugin({ root, projectDir, mcpConfig }) {
   manifest.interface = { ...(manifest.interface || {}), displayName: "Nextster" };
   manifest.plugins = [...manifest.plugins.filter(item => item.name !== PLUGIN_NAME), entry];
   await writeJson(manifestPath, manifest);
+
+  // Other bridges' entries and fields in the Claude manifest are kept as they are.
+  const pluginManifest = JSON.parse(await readFile(path.join(destination, ".claude-plugin", "plugin.json"), "utf8"));
+  const claudeManifestPath = path.join(root, ...CLAUDE_MANIFEST);
+  const claudeManifest = await readManifest(claudeManifestPath, claudeManifestTemplate());
+  claudeManifest.owner ||= { name: "Nextster" };
+  claudeManifest.metadata ||= { description: MARKETPLACE_DESCRIPTION };
+  claudeManifest.plugins = [
+    ...claudeManifest.plugins.filter(item => item.name !== PLUGIN_NAME),
+    { name: PLUGIN_NAME, source: `./plugins/${PLUGIN_NAME}`, description: pluginManifest.description, version: pluginManifest.version, category: "design" }
+  ];
+  await writeJson(claudeManifestPath, claudeManifest);
   return { root, pluginPath: destination };
+}
+
+export async function removeFromSharedMarketplace(root) {
+  const codexManifestPath = path.join(root, ...CODEX_MANIFEST);
+  const claudeManifestPath = path.join(root, ...CLAUDE_MANIFEST);
+  if (!existsSync(codexManifestPath) && !existsSync(claudeManifestPath)) {
+    return { root, existed: false, removed: false, empty: false, codexEmpty: false, claudeEmpty: false };
+  }
+  let removed = false;
+  const remaining = {};
+  for (const [client, manifestPath, template] of [["codex", codexManifestPath, undefined], ["claude", claudeManifestPath, claudeManifestTemplate()]]) {
+    if (!existsSync(manifestPath)) {
+      remaining[client] = 0;
+      continue;
+    }
+    const manifest = await readManifest(manifestPath, template);
+    const plugins = manifest.plugins.filter(item => item.name !== PLUGIN_NAME);
+    removed ||= plugins.length !== manifest.plugins.length;
+    remaining[client] = plugins.length;
+    manifest.plugins = plugins;
+    await writeJson(manifestPath, manifest);
+  }
+  await rm(path.join(root, "plugins", PLUGIN_NAME), { recursive: true, force: true });
+  const empty = remaining.codex === 0 && remaining.claude === 0;
+  if (empty) {
+    await rm(root, { recursive: true, force: true });
+    await removeEmptyDirectory(path.dirname(root));
+  }
+  return { root, existed: true, removed, empty, codexEmpty: remaining.codex === 0, claudeEmpty: remaining.claude === 0 };
+}
+
+export async function registerClaudeCode({ claudePath = "claude", root, run }) {
+  const removedLegacy = [
+    await runOptional(run, claudePath, ["plugin", "uninstall", `${PLUGIN_NAME}@${LEGACY_CLAUDE_MARKETPLACE}`, "--scope", "user"]),
+    await runOptional(run, claudePath, ["plugin", "marketplace", "remove", LEGACY_CLAUDE_MARKETPLACE])
+  ];
+  const marketplaces = await runJson(run, claudePath, ["plugin", "marketplace", "list", "--json"]);
+  const existing = (Array.isArray(marketplaces) ? marketplaces : []).find(item => item.name === MARKETPLACE_NAME);
+  const reinstall = [];
+  let repointedFrom = null;
+  if (existing && existing.source === "directory" && samePath(existing.path, root)) {
+    await run(claudePath, ["plugin", "marketplace", "update", MARKETPLACE_NAME]);
+  } else {
+    if (existing) {
+      if (existing.source !== "directory") {
+        throw new Error(`Claude Code marketplace ${MARKETPLACE_NAME} already uses ${existing.source} source ${existing.path || ""}; expected ${root}`);
+      }
+      // Removing a Claude Code marketplace uninstalls its plugins, so sibling
+      // bridge plugins are reinstalled after the marketplace moves.
+      const installed = await runJson(run, claudePath, ["plugin", "list", "--json"]);
+      reinstall.push(...userScopedPluginIds(installed).filter(id => id.endsWith(`@${MARKETPLACE_NAME}`) && id !== PLUGIN_ID));
+      await run(claudePath, ["plugin", "marketplace", "remove", MARKETPLACE_NAME]);
+      repointedFrom = existing.path;
+    }
+    await run(claudePath, ["plugin", "marketplace", "add", root, "--scope", "user"]);
+  }
+  // Claude Code caches plugins by version, so a same-version refresh needs a
+  // reinstall to pick up new runtime paths.
+  const installed = await runJson(run, claudePath, ["plugin", "list", "--json"]);
+  if (userScopedPluginIds(installed).includes(PLUGIN_ID)) {
+    await run(claudePath, ["plugin", "uninstall", PLUGIN_ID, "--scope", "user"]);
+  }
+  await run(claudePath, ["plugin", "install", PLUGIN_ID, "--scope", "user"]);
+  const reinstalled = [];
+  for (const id of reinstall) reinstalled.push(await runOptional(run, claudePath, ["plugin", "install", id, "--scope", "user"]));
+  return { pluginId: PLUGIN_ID, marketplaceRoot: root, repointedFrom, reinstalled, removedLegacy };
+}
+
+// Project- and local-scope installs belong to specific repositories; only the
+// user-scope install is managed here.
+function userScopedPluginIds(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter(item => (item.scope || "user") === "user")
+    .map(item => item.id)
+    .filter(Boolean);
+}
+
+function claudeManifestTemplate() {
+  return { name: MARKETPLACE_NAME, owner: { name: "Nextster" }, metadata: { description: MARKETPLACE_DESCRIPTION }, plugins: [] };
 }
 
 // Codex fails every plugin command once a registered marketplace root loses its
@@ -214,8 +332,8 @@ async function runOptional(run, command, args) {
   }
 }
 
-async function readManifest(manifestPath) {
-  if (!existsSync(manifestPath)) return { name: MARKETPLACE_NAME, interface: { displayName: "Nextster" }, plugins: [] };
+async function readManifest(manifestPath, template = { name: MARKETPLACE_NAME, interface: { displayName: "Nextster" }, plugins: [] }) {
+  if (!existsSync(manifestPath)) return template;
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   if (manifest.name !== MARKETPLACE_NAME || !Array.isArray(manifest.plugins)) {
     throw new Error(`Invalid shared marketplace at ${manifestPath}`);

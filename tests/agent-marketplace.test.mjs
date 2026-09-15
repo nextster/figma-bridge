@@ -6,11 +6,13 @@ import { fileURLToPath } from "node:url";
 import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import {
   detachCodexMarketplace,
-  installCodexPlugin,
+  installForClients,
   marketplaceLocations,
   migrateLegacyMarketplace,
+  registerClaudeCode,
   registerCodex,
-  restoreCodexMarketplace
+  restoreCodexMarketplace,
+  uninstallFromClients
 } from "../scripts/lib/agent-marketplace.mjs";
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -116,19 +118,25 @@ test("setup moves the legacy marketplace, installs the plugin, and re-registers 
   await writePlugin(legacy, "telegram-bridge", "legacy");
   const codex = fakeCodex({ marketplaces: [{ name: "nextster", root: legacy }], installed: ["figma-bridge@nextster", "telegram-bridge@nextster"] });
 
-  const result = await installCodexPlugin({ projectDir, mcpConfig, locations: { root: shared, legacyRoot: legacy }, run: codex.run });
+  const result = await installForClients({ projectDir, mcpConfig, locations: { root: shared, legacyRoot: legacy }, codex: { path: "codex", run: codex.run } });
   assert.equal(result.migration.moved, true);
   assert.deepEqual(codex.state.marketplaces.map(item => item.root), [shared]);
   assert.deepEqual(codex.state.installed.sort(), ["figma-bridge@nextster", "telegram-bridge@nextster"]);
   assert.deepEqual((await manifest(shared)).plugins.map(item => item.name), ["telegram-bridge", "figma-bridge"]);
   assert.deepEqual(JSON.parse(await readFile(path.join(shared, "plugins", "figma-bridge", ".mcp.json"), "utf8")), mcpConfig);
-  await assert.rejects(access(path.join(shared, "plugins", "figma-bridge", ".claude-plugin")));
+  // One plugin directory serves both clients.
+  await access(path.join(shared, "plugins", "figma-bridge", ".claude-plugin", "plugin.json"));
+  await access(path.join(shared, "plugins", "figma-bridge", ".codex-plugin", "plugin.json"));
   await assert.rejects(access(path.join(shared, "plugins", "figma-bridge", "test")));
+  await assert.rejects(access(path.join(shared, "plugins", "figma-bridge", "mcp")));
+  const claudeManifest = JSON.parse(await readFile(path.join(shared, ".claude-plugin", "marketplace.json"), "utf8"));
+  assert.equal(claudeManifest.name, "nextster");
+  assert.deepEqual(claudeManifest.plugins.map(item => [item.name, item.source]), [["figma-bridge", "./plugins/figma-bridge"]]);
   assert.match(await readFile(path.join(shared, "README.md"), "utf8"), /Nextster agent plugins/);
   assert.equal(await readFile(path.join(shared, "plugins", "telegram-bridge", "marker.txt"), "utf8"), "legacy");
 });
 
-test("setup keeps an existing shared root's README and Claude manifest", async t => {
+test("setup keeps an existing shared root's README and other bridges' Claude entries", async t => {
   const { shared, legacy } = await roots(t);
   await writeManifest(shared, [{ name: "chromium-bridge" }]);
   await writePlugin(shared, "chromium-bridge", "shared");
@@ -138,9 +146,11 @@ test("setup keeps an existing shared root's README and Claude manifest", async t
   await writeFile(path.join(shared, "README.md"), "chromium readme\n");
   const codex = fakeCodex({ marketplaces: [{ name: "nextster", root: shared }], installed: ["chromium-bridge@nextster"] });
 
-  await installCodexPlugin({ projectDir, mcpConfig, locations: { root: shared, legacyRoot: legacy }, run: codex.run });
+  await installForClients({ projectDir, mcpConfig, locations: { root: shared, legacyRoot: legacy }, codex: { path: "codex", run: codex.run } });
   assert.equal(await readFile(path.join(shared, "README.md"), "utf8"), "chromium readme\n");
-  assert.equal(await readFile(path.join(shared, ".claude-plugin", "marketplace.json"), "utf8"), claudeManifest);
+  const mergedClaude = JSON.parse(await readFile(path.join(shared, ".claude-plugin", "marketplace.json"), "utf8"));
+  assert.deepEqual(mergedClaude.plugins.map(item => item.name), ["chromium-bridge", "figma-bridge"]);
+  assert.equal(JSON.stringify(mergedClaude.plugins[0]), JSON.stringify(JSON.parse(claudeManifest).plugins[0]));
   assert.deepEqual((await manifest(shared)).plugins.map(item => item.name), ["chromium-bridge", "figma-bridge"]);
   assert.equal(codex.calls.includes("plugin marketplace remove nextster --json"), false);
   assert.deepEqual(codex.state.installed.sort(), ["chromium-bridge@nextster", "figma-bridge@nextster"]);
@@ -151,19 +161,52 @@ test("a failed plugin install after detaching restores the Codex registration", 
   await writeManifest(legacy, [{ name: "telegram-bridge" }]);
   const codex = fakeCodex({ marketplaces: [{ name: "nextster", root: legacy }], failAdd: "figma-bridge@nextster" });
 
-  await assert.rejects(installCodexPlugin({ projectDir, mcpConfig, locations: { root: shared, legacyRoot: legacy }, run: codex.run }), /figma-bridge@nextster failed/);
+  await assert.rejects(installForClients({ projectDir, mcpConfig, locations: { root: shared, legacyRoot: legacy }, codex: { path: "codex", run: codex.run } }), /figma-bridge@nextster failed/);
   assert.deepEqual(codex.state.marketplaces.map(item => item.root), [shared]);
 
   const { shared: movedShared, legacy: movedLegacy } = await roots(t);
   await writeManifest(movedLegacy, [{ name: "telegram-bridge" }]);
   const interrupted = fakeCodex({ marketplaces: [{ name: "nextster", root: movedLegacy }], installed: ["telegram-bridge@nextster"] });
-  await assert.rejects(installCodexPlugin({ projectDir: path.join(movedShared, "no-project"), mcpConfig, locations: { root: movedShared, legacyRoot: movedLegacy }, run: interrupted.run }));
+  await assert.rejects(installForClients({ projectDir: path.join(movedShared, "no-project"), mcpConfig, locations: { root: movedShared, legacyRoot: movedLegacy }, codex: { path: "codex", run: interrupted.run } }));
   assert.deepEqual(interrupted.state.marketplaces.map(item => item.root), [movedShared]);
   assert.deepEqual(interrupted.state.installed, ["telegram-bridge@nextster"]);
 
   const restoreOnly = fakeCodex({ marketplaces: [] });
   assert.equal((await restoreCodexMarketplace({ root: path.join(shared, "missing"), legacyRoot: shared, run: restoreOnly.run })).root, shared);
   assert.deepEqual(restoreOnly.state.marketplaces.map(item => item.root), [shared]);
+});
+
+test("Claude Code registers the shared marketplace, drops the old private one, and keeps siblings after a move", async t => {
+  const { shared } = await roots(t);
+  const claude = fakeClaude({ marketplaces: [{ name: "nextster", source: "directory", path: "/old/shared" }, { name: "figma-bridge-local", source: "directory", path: "/home/.figma-bridge/claude-marketplace" }], installed: [{ id: "chromium-bridge@nextster", scope: "user" }, { id: "figma-bridge@figma-bridge-local", scope: "user" }, { id: "figma-bridge@nextster", scope: "project" }] });
+  const result = await registerClaudeCode({ root: shared, run: claude.run });
+  assert.equal(result.repointedFrom, "/old/shared");
+  assert.deepEqual(claude.state.marketplaces.map(item => [item.name, item.path]), [["nextster", shared]]);
+  assert.deepEqual(claude.state.installed.map(item => item.id).sort(), ["chromium-bridge@nextster", "figma-bridge@nextster", "figma-bridge@nextster"]);
+
+  const refresh = fakeClaude({ marketplaces: [{ name: "nextster", source: "directory", path: shared }], installed: [{ id: "figma-bridge@nextster", scope: "user" }] });
+  await registerClaudeCode({ root: shared, run: refresh.run });
+  assert.ok(refresh.calls.includes("plugin marketplace update nextster"));
+  assert.deepEqual(refresh.calls.slice(-2), ["plugin uninstall figma-bridge@nextster --scope user", "plugin install figma-bridge@nextster --scope user"]);
+
+  const github = fakeClaude({ marketplaces: [{ name: "nextster", source: "github", path: "nextster/figma-bridge" }] });
+  await assert.rejects(registerClaudeCode({ root: shared, run: github.run }), /already uses github source/);
+});
+
+test("uninstall removes only this plugin and releases empty registrations", async t => {
+  const { shared, legacy } = await roots(t);
+  const codex = fakeCodex({ marketplaces: [], installed: [] });
+  const claude = fakeClaude({ marketplaces: [], installed: [] });
+  await installForClients({ projectDir, mcpConfig, locations: { root: shared, legacyRoot: legacy }, codex: { path: "codex", run: codex.run }, claude: { path: "claude", run: claude.run } });
+  assert.deepEqual(claude.state.installed.map(item => item.id), ["figma-bridge@nextster"]);
+
+  const result = await uninstallFromClients({ locations: { root: shared, legacyRoot: legacy }, codex: { path: "codex", run: codex.run }, claude: { path: "claude", run: claude.run } });
+  assert.equal(result.removal.empty, true);
+  await assert.rejects(access(shared));
+  assert.deepEqual(codex.state.marketplaces, []);
+  assert.deepEqual(claude.state.marketplaces, []);
+  assert.deepEqual(codex.state.installed, []);
+  assert.deepEqual(claude.state.installed, []);
 });
 
 async function roots(t) {
@@ -184,6 +227,48 @@ async function writePlugin(root, name, marker) {
 
 async function manifest(root) {
   return JSON.parse(await readFile(path.join(root, ".agents", "plugins", "marketplace.json"), "utf8"));
+}
+
+// A stateful stand-in for the Claude Code CLI's plugin commands.
+function fakeClaude({ marketplaces = [], installed = [] } = {}) {
+  const state = { marketplaces: [...marketplaces], installed: [...installed] };
+  const calls = [];
+  const fail = message => { throw Object.assign(new Error(message), { stderr: message }); };
+  async function run(command, args) {
+    assert.equal(command, "claude");
+    const line = args.join(" ");
+    calls.push(line);
+    if (line === "plugin marketplace list --json") return { stdout: JSON.stringify(state.marketplaces) };
+    if (line === "plugin list --json") return { stdout: JSON.stringify(state.installed) };
+    if (args[1] === "marketplace" && args[2] === "update") {
+      if (!state.marketplaces.some(item => item.name === args[3])) fail(`marketplace ${args[3]} not found`);
+      return { stdout: "" };
+    }
+    if (args[1] === "marketplace" && args[2] === "remove") {
+      if (!state.marketplaces.some(item => item.name === args[3])) fail(`marketplace ${args[3]} not found`);
+      state.marketplaces = state.marketplaces.filter(item => item.name !== args[3]);
+      state.installed = state.installed.filter(item => !item.id.endsWith(`@${args[3]}`) || item.scope !== "user");
+      return { stdout: "" };
+    }
+    if (args[1] === "marketplace" && args[2] === "add") {
+      state.marketplaces.push({ name: "nextster", source: "directory", path: args[3] });
+      return { stdout: "" };
+    }
+    if (args[1] === "uninstall") {
+      const before = state.installed.length;
+      state.installed = state.installed.filter(item => !(item.id === args[2] && (item.scope || "user") === "user"));
+      if (before === state.installed.length) fail(`plugin ${args[2]} is not installed`);
+      return { stdout: "" };
+    }
+    if (args[1] === "install") {
+      const marketplace = args[2].split("@")[1];
+      if (!state.marketplaces.some(item => item.name === marketplace)) fail(`marketplace ${marketplace} not found`);
+      state.installed.push({ id: args[2], scope: "user" });
+      return { stdout: "" };
+    }
+    fail(`unexpected claude command: ${line}`);
+  }
+  return { run, state, calls };
 }
 
 // A stateful stand-in for the Codex CLI's marketplace and plugin registry.

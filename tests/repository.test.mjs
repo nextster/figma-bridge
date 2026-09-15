@@ -11,6 +11,14 @@ test("marketplace points to the canonical repository plugin", () => {
   const marketplace = JSON.parse(fs.readFileSync(path.join(root, ".agents/plugins/marketplace.json"), "utf8"));
   assert.equal(marketplace.name, "nextster");
   assert.deepEqual(marketplace.plugins.map(plugin => plugin.source.path), ["./plugins/figma-bridge"]);
+  // Codex and Claude Code see the same marketplace name and plugin directory.
+  const claude = JSON.parse(fs.readFileSync(path.join(root, ".claude-plugin/marketplace.json"), "utf8"));
+  assert.equal(claude.name, "nextster");
+  assert.deepEqual(claude.plugins.map(plugin => plugin.source), ["./plugins/figma-bridge"]);
+  const codexPlugin = JSON.parse(fs.readFileSync(path.join(root, "plugins/figma-bridge/.codex-plugin/plugin.json"), "utf8"));
+  const claudePlugin = JSON.parse(fs.readFileSync(path.join(root, "plugins/figma-bridge/.claude-plugin/plugin.json"), "utf8"));
+  assert.equal(claudePlugin.name, codexPlugin.name);
+  assert.equal(claudePlugin.version, codexPlugin.version);
 });
 
 test("Figma plugin network access is limited to the companion and the relay", () => {

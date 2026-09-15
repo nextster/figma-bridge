@@ -8,6 +8,7 @@ import { launchCompanion } from "../plugins/figma-bridge/mcp/autostart.mjs";
 import { requestControl, stateDirectory } from "../plugins/figma-bridge/mcp/control.mjs";
 import { DEV_LINK_FILE, DEV_LINK_SCHEMA_VERSION, resolveRuntime, usesPosixPermissions, validateCheckout } from "../runtime/runtime-bootstrap.mjs";
 import { LAUNCH_AGENT_LABEL, findExecutable, launchAgentPath, runTool, stableNodePath, writePrivateJson } from "./lib/platform.mjs";
+import { marketplaceLocations } from "./lib/agent-marketplace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const command = process.argv[2] || "status";
@@ -97,7 +98,7 @@ function codexStatus() {
 
 function claudeStatus() {
   if (!findExecutable("claude")) return { available: false, bootstrapReady: false };
-  const configPath = path.join(stateDir, "claude-marketplace", "plugins", "figma-bridge", ".mcp.json");
+  const configPath = path.join(marketplaceLocations({ env: process.env }).root, "plugins", "figma-bridge", ".mcp.json");
   const config = fs.existsSync(configPath) ? parseJson(fs.readFileSync(configPath, "utf8")) : {};
   const args = config.mcpServers?.["figma-bridge"]?.args || [];
   return {

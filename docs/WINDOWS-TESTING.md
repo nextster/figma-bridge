@@ -12,7 +12,7 @@ GitHub Actions does not run on Windows yet. Use this checklist on a Windows 10 o
 6. In a new Claude Code or Codex session ask for `list_files`, `snapshot`, and `export_png`. Expect the open file and an image.
 7. Stop the companion with `npm run bridge -- stop`, then call `status` from the agent again. Expect the MCP server to start the companion within a few seconds.
 8. Sign out and back in. Expect the plugin to reconnect without a console window appearing.
-9. Optional: `npm run setup -- --claude-desktop`, restart Claude Desktop, and repeat step 6 in a chat.
+9. If Claude Desktop is installed, check that setup reported `Claude Desktop`, restart it, and repeat step 6 in a chat.
 10. Run `npm run uninstall` and confirm the Startup launcher and the Claude plugin are gone.
 
 ## Relay mode

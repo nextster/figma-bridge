@@ -148,7 +148,13 @@ test("anonymous plugin sockets cannot send large frames or pile up", async t => 
   await assert.rejects(connectPlugin(relay), /unexpected 403/);
   held[0].close();
   await held[0].closed();
-  const replacement = await connectPlugin(relay);
+  // The server releases the slot when it processes the close, which can lag the client.
+  let replacement = null;
+  for (let attempt = 0; attempt < 50 && !replacement; attempt += 1) {
+    replacement = await connectPlugin(relay).catch(() => null);
+    if (!replacement) await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.ok(replacement);
   replacement.close();
 
   // Authenticated devices may still send full-size exports.

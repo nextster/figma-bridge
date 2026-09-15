@@ -21,7 +21,7 @@ import {
   windowsStartupScript,
   writePrivateJson
 } from "./lib/platform.mjs";
-import { installCodexPlugin as installSharedCodexPlugin, marketplaceLocations } from "./lib/agent-marketplace.mjs";
+import { installForClients, marketplaceLocations, uninstallFromClients } from "./lib/agent-marketplace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
@@ -32,10 +32,9 @@ const runtime = path.join(runtimeRoot, packageJson.version);
 const stableBootstrap = path.join(runtimeRoot, "runtime-bootstrap.mjs");
 const developmentLink = path.join(stateDir, "dev-link.json");
 const nodePath = stableNodePath(process.execPath);
-const codexMarketplace = marketplaceLocations({ env: process.env });
-const claudeMarketplace = path.join(stateDir, "claude-marketplace");
-const CLAUDE_MARKETPLACE_NAME = "figma-bridge-local";
-const CLAUDE_PLUGIN_ID = `figma-bridge@${CLAUDE_MARKETPLACE_NAME}`;
+const marketplace = marketplaceLocations({ env: process.env });
+// Written by earlier builds that registered Claude Code from a private marketplace.
+const legacyClaudeMarketplace = path.join(stateDir, "claude-marketplace");
 const domain = `gui/${process.getuid?.() ?? os.userInfo().uid}`;
 const flags = new Set(process.argv.slice(2));
 // launchd labels are per login session, not per HOME. Never touch the real
@@ -43,7 +42,7 @@ const flags = new Set(process.argv.slice(2));
 const launchdAllowed = platform === "darwin" && path.resolve(os.homedir()) === path.resolve(os.userInfo().homedir);
 
 for (const flag of flags) {
-  if (!["--uninstall", "--no-codex", "--no-claude", "--claude-desktop", "--no-autostart", "--relay"].includes(flag)) {
+  if (!["--uninstall", "--no-codex", "--no-claude", "--no-claude-code", "--no-claude-desktop", "--no-autostart", "--relay"].includes(flag)) {
     throw new Error(`unknown setup option: ${flag}`);
   }
 }
@@ -72,20 +71,23 @@ if (relayMode) {
   await restartDetachedCompanion();
 }
 
+const clients = agentClients();
 const configured = [];
-if (!flags.has("--no-codex") && findExecutable("codex")) {
-  await installCodexPlugin();
-  configured.push("Codex");
+if (clients.codex || clients.claude) {
+  const result = await installForClients({
+    projectDir: root,
+    mcpConfig: relayMode ? relayMcpConfig() : localMcpConfig(),
+    locations: marketplace,
+    codex: clients.codex,
+    claude: clients.claude
+  });
+  if (result.migration.migrated) process.stdout.write(`Moved the Nextster marketplace from ${result.migration.from} to ${result.migration.to}.\n`);
+  fs.rmSync(legacyClaudeMarketplace, { recursive: true, force: true });
+  if (clients.codex) configured.push("Codex");
+  if (clients.claude) configured.push("Claude Code");
 }
-if (!flags.has("--no-claude") && findExecutable("claude")) {
-  installClaudeCodePlugin();
-  configured.push("Claude Code");
-}
-if (flags.has("--claude-desktop") && relayMode) {
-  process.stdout.write(`Claude Desktop and claude.ai: add ${relayMcpUrl} under Settings -> Connectors -> Add custom connector.\n`);
-} else if (flags.has("--claude-desktop")) {
-  installClaudeDesktop();
-  configured.push("Claude Desktop");
+if (!flags.has("--no-claude") && !flags.has("--no-claude-desktop")) {
+  if (installClaudeDesktop()) configured.push("Claude Desktop");
 }
 
 process.stdout.write(`Installed Figma Bridge runtime ${packageJson.version}.\n`);
@@ -147,18 +149,15 @@ async function stopCompanion() {
   throw new Error("The running Figma Bridge companion did not stop");
 }
 
-async function installCodexPlugin() {
-  const destination = path.join(codexMarketplace.root, "plugins", "figma-bridge");
-  const result = await installSharedCodexPlugin({
-    projectDir: root,
-    mcpConfig: relayMode ? relayMcpConfig() : localMcpConfig({ cwd: destination }),
-    locations: codexMarketplace,
-    run: codexRunner
-  });
-  if (result.migration.migrated) process.stdout.write(`Moved the Nextster marketplace from ${result.migration.from} to ${result.migration.to}.\n`);
+function agentClients() {
+  const client = (name, skipped) => !skipped && findExecutable(name) ? { path: name, run: toolRunner } : null;
+  return {
+    codex: client("codex", flags.has("--no-codex")),
+    claude: client("claude", flags.has("--no-claude") || flags.has("--no-claude-code"))
+  };
 }
 
-async function codexRunner(command, args) {
+async function toolRunner(command, args) {
   const result = runTool(command, args, { check: false });
   if (result.status !== 0) {
     throw Object.assign(new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout || result.error?.message}`), {
@@ -169,49 +168,23 @@ async function codexRunner(command, args) {
   return { stdout: result.stdout };
 }
 
-function installClaudeCodePlugin() {
-  const pluginDestination = path.join(claudeMarketplace, "plugins", "figma-bridge");
-  const temporary = path.join(stateDir, `.claude-marketplace.tmp-${process.pid}`);
-  fs.rmSync(temporary, { recursive: true, force: true });
-  copyTree(path.join(root, "plugins", "figma-bridge"), path.join(temporary, "plugins", "figma-bridge"), { exclude: [".codex-plugin", "mcp"] });
-  const pluginManifest = claudePluginManifest();
-  fs.mkdirSync(path.join(temporary, "plugins", "figma-bridge", ".claude-plugin"), { recursive: true });
-  writePrivateJson(path.join(temporary, "plugins", "figma-bridge", ".claude-plugin", "plugin.json"), pluginManifest);
-  writePrivateJson(path.join(temporary, "plugins", "figma-bridge", ".mcp.json"), relayMode ? relayMcpConfig() : localMcpConfig({ cwd: pluginDestination }));
-  fs.mkdirSync(path.join(temporary, ".claude-plugin"), { recursive: true });
-  writePrivateJson(path.join(temporary, ".claude-plugin", "marketplace.json"), {
-    name: CLAUDE_MARKETPLACE_NAME,
-    owner: { name: "Figma Bridge local setup" },
-    plugins: [{
-      name: "figma-bridge",
-      source: "./plugins/figma-bridge",
-      description: pluginManifest.description,
-      version: pluginManifest.version
-    }]
-  });
-  fs.rmSync(claudeMarketplace, { recursive: true, force: true });
-  fs.renameSync(temporary, claudeMarketplace);
-
-  const marketplaces = parseJson(runTool("claude", ["plugin", "marketplace", "list", "--json"]).stdout);
-  const existing = Array.isArray(marketplaces) ? marketplaces.find(item => item.name === CLAUDE_MARKETPLACE_NAME) : null;
-  if (existing) runTool("claude", ["plugin", "marketplace", "update", CLAUDE_MARKETPLACE_NAME]);
-  else runTool("claude", ["plugin", "marketplace", "add", claudeMarketplace, "--scope", "user"]);
-  const installed = parseJson(runTool("claude", ["plugin", "list", "--json"]).stdout);
-  const present = Array.isArray(installed) && installed.some(item => item.id === CLAUDE_PLUGIN_ID || `${item.name}@${item.marketplace}` === CLAUDE_PLUGIN_ID);
-  if (present) runTool("claude", ["plugin", "update", CLAUDE_PLUGIN_ID]);
-  else runTool("claude", ["plugin", "install", CLAUDE_PLUGIN_ID, "--scope", "user"]);
-}
-
+// Claude Desktop is configured whenever it is installed. Its config file only
+// launches local servers, so relay mode points to the Connectors settings.
 function installClaudeDesktop() {
   const configPath = claudeDesktopConfigPath({ platform });
-  if (!configPath) throw new Error("Claude Desktop is not available on this platform");
-  if (!fs.existsSync(path.dirname(configPath))) throw new Error(`Claude Desktop configuration directory was not found: ${path.dirname(configPath)}`);
+  if (!configPath || !fs.existsSync(path.dirname(configPath))) return false;
+  if (relayMode) {
+    process.stdout.write(`Claude Desktop and claude.ai: add ${relayMcpUrl} under Settings -> Connectors -> Add custom connector.\n`);
+    return false;
+  }
   const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
   const updated = updateClaudeDesktopConfig(existing, { command: nodePath, args: [stableBootstrap, "mcp"] });
-  if (existing === updated) return;
-  if (existing) fs.copyFileSync(configPath, `${configPath}.figma-bridge-backup-${Date.now()}`);
-  fs.writeFileSync(configPath, updated);
-  process.stdout.write(`Updated ${configPath}. Quit and reopen Claude Desktop to load Figma Bridge.\n`);
+  if (existing !== updated) {
+    if (existing) fs.copyFileSync(configPath, `${configPath}.figma-bridge-backup`);
+    fs.writeFileSync(configPath, updated);
+    process.stdout.write(`Updated ${configPath}. Quit and reopen Claude Desktop to load Figma Bridge.\n`);
+  }
+  return true;
 }
 
 async function uninstall() {
@@ -221,21 +194,19 @@ async function uninstall() {
   }
   if (platform === "win32") fs.rmSync(path.join(windowsStartupDirectory(process.env), WINDOWS_STARTUP_FILE), { force: true });
   try { await stopCompanion(); } catch (error) { process.stderr.write(`${error.message}\n`); }
-  if (fs.existsSync(claudeMarketplace) && findExecutable("claude")) {
-    runTool("claude", ["plugin", "uninstall", CLAUDE_PLUGIN_ID, "--scope", "user"], { check: false });
-    runTool("claude", ["plugin", "marketplace", "remove", CLAUDE_MARKETPLACE_NAME], { check: false });
-    fs.rmSync(claudeMarketplace, { recursive: true, force: true });
-  }
+  const clients = agentClients();
+  await uninstallFromClients({ locations: marketplace, codex: clients.codex, claude: clients.claude });
+  fs.rmSync(legacyClaudeMarketplace, { recursive: true, force: true });
   const desktopConfig = claudeDesktopConfigPath({ platform });
   if (desktopConfig && fs.existsSync(desktopConfig)) {
     const existing = fs.readFileSync(desktopConfig, "utf8");
     const updated = updateClaudeDesktopConfig(existing, null);
     if (JSON.stringify(JSON.parse(existing)) !== JSON.stringify(JSON.parse(updated))) {
-      fs.copyFileSync(desktopConfig, `${desktopConfig}.figma-bridge-backup-${Date.now()}`);
+      fs.copyFileSync(desktopConfig, `${desktopConfig}.figma-bridge-backup`);
       fs.writeFileSync(desktopConfig, updated);
     }
   }
-  process.stdout.write("Figma Bridge autostart and Claude integrations were removed. Codex plugin entries, pairing state, and versioned runtimes were preserved.\n");
+  process.stdout.write("Figma Bridge autostart and client registrations were removed. Pairing state and versioned runtimes were preserved.\n");
 }
 
 function relayMcpConfig() {
@@ -249,24 +220,11 @@ function repositoryRelayUrl() {
   return url;
 }
 
-function localMcpConfig({ cwd }) {
-  return { mcpServers: { "figma-bridge": { command: nodePath, args: [stableBootstrap, "mcp"], cwd } } };
+// Absolute paths only: Claude Code ignores cwd, and GUI clients may lack node on PATH.
+function localMcpConfig() {
+  return { mcpServers: { "figma-bridge": { command: nodePath, args: [stableBootstrap, "mcp"] } } };
 }
 
-function claudePluginManifest() {
-  const codexManifest = JSON.parse(fs.readFileSync(path.join(root, "plugins", "figma-bridge", ".codex-plugin", "plugin.json"), "utf8"));
-  const repositoryManifest = path.join(root, "plugins", "figma-bridge", ".claude-plugin", "plugin.json");
-  const base = fs.existsSync(repositoryManifest) ? JSON.parse(fs.readFileSync(repositoryManifest, "utf8")) : {};
-  return {
-    ...base,
-    name: "figma-bridge",
-    version: packageJson.version,
-    description: base.description || codexManifest.description,
-    author: base.author || codexManifest.author,
-    license: base.license || codexManifest.license,
-    keywords: base.keywords || codexManifest.keywords
-  };
-}
 
 function copyTree(source, destination, { exclude = [] } = {}) {
   fs.rmSync(destination, { recursive: true, force: true });
@@ -302,10 +260,6 @@ async function reachable(method) {
 
 function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
-}
-
-function parseJson(value) {
-  try { return JSON.parse(value); } catch { return {}; }
 }
 
 function waitForUnloaded() {

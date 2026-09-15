@@ -62,11 +62,10 @@ npm run setup
 
 Setup installs a versioned runtime under `~/.figma-bridge` (`%USERPROFILE%\.figma-bridge` on Windows) and registers Figma Bridge with every client it finds:
 
-- **Codex:** a plugin in the Nextster marketplace shared with other Nextster bridges under `~/.agent-plugins/nextster` (`NEXTSTER_MARKETPLACE_DIR` overrides it). Setup moves or merges an older `~/.codex/marketplaces/nextster` copy there, keeping other plugins.
-- **Claude Code** (CLI and the Code tab of the Claude desktop app): the `figma-bridge@figma-bridge-local` plugin, including the skill.
-- **Claude Desktop chat:** only with `npm run setup -- --claude-desktop`. Setup backs up and merges `claude_desktop_config.json`; quit and reopen Claude Desktop afterwards.
+- **Codex and Claude Code** (CLI and the Code tab of the Claude desktop app) install `figma-bridge@nextster`, including the skill, from the marketplace shared with other Nextster bridges in `~/.agent-plugins/nextster` (`NEXTSTER_MARKETPLACE_DIR` overrides it). One plugin directory carries both client manifests; setup adds its entries to both manifests without touching other bridges, and moves or merges an older `~/.codex/marketplaces/nextster` copy there.
+- **Claude Desktop chat** gets a `figma-bridge` entry in `claude_desktop_config.json` whenever Claude Desktop is installed. Other settings are preserved and the previous file is kept as `claude_desktop_config.json.figma-bridge-backup`; quit and reopen Claude Desktop afterwards.
 
-The companion starts at sign-in (a LaunchAgent on macOS, a hidden Startup launcher on Windows) and MCP clients also start it on demand. Use `--no-codex`, `--no-claude`, or `--no-autostart` to skip parts, and `npm run uninstall` to remove autostart and the Claude integrations.
+The companion starts at sign-in (a LaunchAgent on macOS, a hidden Startup launcher on Windows) and MCP clients also start it on demand. Use `--no-codex`, `--no-claude-code`, `--no-claude-desktop`, `--no-claude` (both Claude clients), or `--no-autostart` to skip parts, and `npm run uninstall` to remove autostart and every client registration.
 
 In the plugin choose **This computer → Connect to this computer**, then type the 6-digit code that the Figma Bridge dialog shows on your computer. Figma stores the resulting token in `clientStorage`. Manual token entry through `npm run bridge -- pair` remains available for troubleshooting. Open a new agent task or session after installing or changing MCP tools.
 
