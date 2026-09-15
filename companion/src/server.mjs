@@ -17,7 +17,8 @@ import { cleanError, createFigmaHub } from "./hub.mjs";
 
 const VERSION = "0.2.0";
 const DEFAULT_PORT = 3847;
-const MAX_WS_BYTES = 8 * 1024 * 1024;
+// Plugin exports are capped at 8 MiB raw, which is about 10.7 MiB as base64 JSON.
+const MAX_WS_BYTES = 12 * 1024 * 1024;
 const STARTUP_CLIENT_WAIT_MS = 4000;
 const STARTUP_WINDOW_MS = 15_000;
 

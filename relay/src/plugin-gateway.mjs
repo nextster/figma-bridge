@@ -9,7 +9,8 @@ import { WebSocketServer } from "ws";
 import { cleanError, createFigmaHub } from "../../companion/src/hub.mjs";
 
 const PROTOCOL = 1;
-const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+// Plugin exports are capped at 8 MiB raw, which is about 10.7 MiB as base64 JSON.
+const MAX_MESSAGE_BYTES = 12 * 1024 * 1024;
 const AUTH_TIMEOUT_MS = 10_000;
 const HEARTBEAT_MS = 25_000;
 const ALLOWED_ORIGINS = new Set(["null", "https://www.figma.com"]);

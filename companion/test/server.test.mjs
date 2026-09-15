@@ -53,6 +53,16 @@ test("authenticated Figma client serves control RPC without exposing the token",
     arguments: { depth: 1 }
   }, { env });
   assert.deepEqual(response, { command: "document.snapshot", arguments: { depth: 1 } });
+
+  // The largest PNG the plugin allows (8 MiB) arrives base64-encoded inside JSON.
+  const largest = "A".repeat(Math.ceil((8 * 1024 * 1024) / 3) * 4);
+  websocket.removeAllListeners("message");
+  websocket.on("message", raw => {
+    const message = JSON.parse(raw.toString());
+    if (message.type === "rpc.request") websocket.send(JSON.stringify({ type: "rpc.response", id: message.id, ok: true, result: { data: largest } }));
+  });
+  const exported = await requestControl("figma.call", { command: "nodes.exportPng", arguments: {} }, { env });
+  assert.equal(exported.data.length, largest.length);
 });
 
 test("wrong pairing token is rejected", async t => {
