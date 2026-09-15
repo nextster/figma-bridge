@@ -21,6 +21,7 @@ import {
   windowsStartupScript,
   writePrivateJson
 } from "./lib/platform.mjs";
+import { installCodexPlugin as installSharedCodexPlugin, marketplaceLocations } from "./lib/agent-marketplace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
@@ -31,9 +32,7 @@ const runtime = path.join(runtimeRoot, packageJson.version);
 const stableBootstrap = path.join(runtimeRoot, "runtime-bootstrap.mjs");
 const developmentLink = path.join(stateDir, "dev-link.json");
 const nodePath = stableNodePath(process.execPath);
-const codexMarketplace = path.resolve(
-  process.env.NEXTSTER_MARKETPLACE_DIR || path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "marketplaces", "nextster")
-);
+const codexMarketplace = marketplaceLocations({ env: process.env });
 const claudeMarketplace = path.join(stateDir, "claude-marketplace");
 const CLAUDE_MARKETPLACE_NAME = "figma-bridge-local";
 const CLAUDE_PLUGIN_ID = `figma-bridge@${CLAUDE_MARKETPLACE_NAME}`;
@@ -75,7 +74,7 @@ if (relayMode) {
 
 const configured = [];
 if (!flags.has("--no-codex") && findExecutable("codex")) {
-  installCodexPlugin();
+  await installCodexPlugin();
   configured.push("Codex");
 }
 if (!flags.has("--no-claude") && findExecutable("claude")) {
@@ -148,44 +147,26 @@ async function stopCompanion() {
   throw new Error("The running Figma Bridge companion did not stop");
 }
 
-function installCodexPlugin() {
-  const pluginsDir = path.join(codexMarketplace, "plugins");
-  const manifestDir = path.join(codexMarketplace, ".agents", "plugins");
-  const destination = path.join(pluginsDir, "figma-bridge");
-  const temporary = path.join(pluginsDir, `.figma-bridge.tmp-${process.pid}`);
-  fs.mkdirSync(pluginsDir, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(manifestDir, { recursive: true, mode: 0o700 });
-  fs.rmSync(temporary, { recursive: true, force: true });
-  copyTree(path.join(root, "plugins", "figma-bridge"), temporary, { exclude: [".claude-plugin"] });
-  writePrivateJson(path.join(temporary, ".mcp.json"), relayMode ? relayMcpConfig() : localMcpConfig({ cwd: destination }));
-  fs.rmSync(destination, { recursive: true, force: true });
-  fs.renameSync(temporary, destination);
+async function installCodexPlugin() {
+  const destination = path.join(codexMarketplace.root, "plugins", "figma-bridge");
+  const result = await installSharedCodexPlugin({
+    projectDir: root,
+    mcpConfig: relayMode ? relayMcpConfig() : localMcpConfig({ cwd: destination }),
+    locations: codexMarketplace,
+    run: codexRunner
+  });
+  if (result.migration.migrated) process.stdout.write(`Moved the Nextster marketplace from ${result.migration.from} to ${result.migration.to}.\n`);
+}
 
-  const sourceMarketplace = JSON.parse(fs.readFileSync(path.join(root, ".agents", "plugins", "marketplace.json"), "utf8"));
-  const entry = sourceMarketplace.plugins.find(item => item.name === "figma-bridge");
-  if (sourceMarketplace.name !== "nextster" || !entry) throw new Error("Invalid Nextster marketplace source");
-  const manifestPath = path.join(manifestDir, "marketplace.json");
-  let marketplace = { name: "nextster", interface: { displayName: "Nextster" }, plugins: [] };
-  if (fs.existsSync(manifestPath)) marketplace = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  if (marketplace.name !== "nextster" || !Array.isArray(marketplace.plugins)) {
-    throw new Error(`Invalid shared marketplace at ${manifestPath}`);
+async function codexRunner(command, args) {
+  const result = runTool(command, args, { check: false });
+  if (result.status !== 0) {
+    throw Object.assign(new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout || result.error?.message}`), {
+      stderr: result.stderr,
+      stdout: result.stdout
+    });
   }
-  marketplace.interface = { ...(marketplace.interface || {}), displayName: "Nextster" };
-  marketplace.plugins = [...marketplace.plugins.filter(item => item.name !== "figma-bridge"), entry];
-  writePrivateJson(manifestPath, marketplace);
-
-  const pluginId = "figma-bridge@nextster";
-  runTool("codex", ["plugin", "remove", "figma-bridge@figma-bridge-repo", "--json"], { check: false });
-  runTool("codex", ["plugin", "remove", pluginId, "--json"], { check: false });
-  const marketplaces = parseJson(runTool("codex", ["plugin", "marketplace", "list", "--json"]).stdout);
-  const legacy = marketplaces.marketplaces?.find(item => item.name === "figma-bridge-repo");
-  if (legacy) runTool("codex", ["plugin", "marketplace", "remove", "figma-bridge-repo", "--json"]);
-  const existing = marketplaces.marketplaces?.find(item => item.name === "nextster");
-  if (existing && !samePath(existing.root, codexMarketplace)) {
-    throw new Error(`Codex marketplace nextster already points to ${existing.root}; expected ${codexMarketplace}`);
-  }
-  if (!existing) runTool("codex", ["plugin", "marketplace", "add", codexMarketplace, "--json"]);
-  runTool("codex", ["plugin", "add", pluginId, "--json"]);
+  return { stdout: result.stdout };
 }
 
 function installClaudeCodePlugin() {
@@ -298,13 +279,6 @@ function copyTree(source, destination, { exclude = [] } = {}) {
       return !segments.includes("test") && !exclude.includes(segments[0]);
     }
   });
-}
-
-function samePath(first, second) {
-  const canonical = value => {
-    try { return fs.realpathSync.native(value); } catch { return path.resolve(value); }
-  };
-  return canonical(first) === canonical(second);
 }
 
 function requireFile(file, hint) {

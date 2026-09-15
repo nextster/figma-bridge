@@ -62,7 +62,7 @@ npm run setup
 
 Setup installs a versioned runtime under `~/.figma-bridge` (`%USERPROFILE%\.figma-bridge` on Windows) and registers Figma Bridge with every client it finds:
 
-- **Codex:** a plugin in the shared Nextster marketplace under `~/.codex/marketplaces/nextster`.
+- **Codex:** a plugin in the Nextster marketplace shared with other Nextster bridges under `~/.agent-plugins/nextster` (`NEXTSTER_MARKETPLACE_DIR` overrides it). Setup moves or merges an older `~/.codex/marketplaces/nextster` copy there, keeping other plugins.
 - **Claude Code** (CLI and the Code tab of the Claude desktop app): the `figma-bridge@figma-bridge-local` plugin, including the skill.
 - **Claude Desktop chat:** only with `npm run setup -- --claude-desktop`. Setup backs up and merges `claude_desktop_config.json`; quit and reopen Claude Desktop afterwards.
 

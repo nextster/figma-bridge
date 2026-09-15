@@ -56,6 +56,7 @@ for (const relative of [
   "relay/src/oauth-page.mjs",
   "relay/src/plugin-gateway.mjs",
   "relay/src/rate-limit.mjs",
+  "scripts/lib/agent-marketplace.mjs",
   "scripts/lib/platform.mjs",
   "scripts/setup.mjs",
   "scripts/dev.mjs"
