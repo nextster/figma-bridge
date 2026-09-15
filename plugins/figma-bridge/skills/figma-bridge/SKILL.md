@@ -1,6 +1,6 @@
 ---
 name: figma-bridge
-description: Inspect and edit the user's currently open Figma Desktop files through the local authenticated Figma Bridge. Use for every task that asks Codex to read a Figma selection, inspect a Figma document, create or change Figma nodes, or export a Figma frame through this bridge.
+description: Inspect and edit the user's currently open Figma files through the authenticated Figma Bridge plugin, locally or through the Figma Bridge relay. Use for every task that asks to read a Figma selection, inspect a Figma document, create or change Figma nodes, or export a Figma frame through this bridge.
 ---
 
 # Figma Bridge
@@ -11,7 +11,8 @@ Use the Figma Bridge MCP tools as the source of truth for the open Figma file. R
 
 - Call `list_files` when more than one Figma plugin instance may be open.
 - Omit `clientId` only when the most recently active connected file is clearly the target.
-- If no file is connected, ask the user to open the Figma Bridge development plugin in the target Figma Desktop file. Do not switch to web or Computer Use as a substitute.
+- If no file is connected, ask the user to open the Figma Bridge plugin in the target Figma file and connect it (This computer for local mode, Relay for relay mode). Do not switch to web or Computer Use as a substitute.
+- `status` reports `mode: "relay"` when this MCP server is the hosted relay; otherwise it is the local companion.
 
 ## Inspect before changing
 
@@ -21,7 +22,7 @@ Use the Figma Bridge MCP tools as the source of truth for the open Figma file. R
 - Start with `snapshot` at shallow depth or `get_selection`.
 - Use `find_nodes` to resolve names to exact node IDs; never invent IDs.
 - Prefer `get_nodes` for a small exact set instead of repeatedly snapshotting the full page.
-- For SwiftUI implementation of several screens, prefer one `prepare_swiftui_handoff` call. It writes a local manifest and asset directory containing screen PNGs, original image fills, SVG vectors, and SF Symbol matches, while returning compact layout/text/token/shader data.
+- For SwiftUI implementation of several screens, prefer one `prepare_swiftui_handoff` call. It returns compact layout/text/token/shader data plus screen PNGs, original image fills, SVG vectors, and SF Symbol matches. Locally they are saved to a manifest and asset directory. Through the relay each asset has a `url` and the result has `manifestUrl`; the links expire after 30 minutes, so download the assets you need into the project right away (for example with `curl -fL -o <file> <url>`).
 
 ## Mutate narrowly
 

@@ -1,0 +1,14 @@
+.DS_Store
+.git/
+.claude/
+.github/
+node_modules/
+figma-plugin/
+runtime/
+scripts/
+tests/
+**/test/
+*.db
+*.db-shm
+*.db-wal
+*.log

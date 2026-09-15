@@ -1,0 +1,17 @@
+{
+  "name": "figma-bridge",
+  "displayName": "Figma Bridge",
+  "version": "0.2.0",
+  "description": "Inspect and edit open Figma files through the Figma Bridge plugin, locally or through an invite-only relay.",
+  "author": {
+    "name": "Artem"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/nextster/figma-bridge",
+  "keywords": [
+    "figma",
+    "design",
+    "mcp",
+    "bridge"
+  ]
+}

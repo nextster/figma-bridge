@@ -1,0 +1,100 @@
+<!--
+  "Install Figma Bridge" button for the Nextster website.
+
+  Paste this fragment into a page. It has no dependencies. Each option opens an
+  agent app with the installation request already typed in; the user reviews
+  it and presses Enter, and the agent runs install.sh or install.ps1. Links:
+
+    Codex / ChatGPT desktop app  codex://threads/new?prompt=…   (learn.chatgpt.com/docs/reference/commands)
+    Claude desktop app, Code tab claude://code/new?q=…          (support.claude.com/en/articles/14729294)
+    Claude Code in a terminal    claude-cli://open?q=…          (code.claude.com/docs/en/deep-links)
+
+  Browsers ask before opening an app link, and no browser reports whether an
+  app is installed, so the command is also copied to the clipboard and shown
+  as a fallback.
+-->
+<div class="fb-install" data-repository="nextster/figma-bridge">
+  <style>
+    .fb-install { --fb-bg: #fff; --fb-text: #17202a; --fb-muted: #5b6675; --fb-line: #d8dde5; --fb-accent: #0d6efd; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fb-text); max-width: 560px; }
+    @media (prefers-color-scheme: dark) { .fb-install { --fb-bg: #171b21; --fb-text: #e8ebef; --fb-muted: #9aa4b2; --fb-line: #2d343d; --fb-accent: #5b9dff; } }
+    .fb-install .fb-options { display: grid; gap: 8px; }
+    .fb-install button { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 1px solid var(--fb-line); border-radius: 10px; background: var(--fb-bg); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+    .fb-install button:hover, .fb-install button:focus-visible { border-color: var(--fb-accent); outline: none; }
+    .fb-install .fb-primary { background: var(--fb-accent); border-color: var(--fb-accent); color: #fff; font-weight: 600; }
+    .fb-install small { color: var(--fb-muted); }
+    .fb-install .fb-primary small { color: rgba(255, 255, 255, .8); }
+    .fb-install pre { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--fb-line); border-radius: 8px; overflow-x: auto; white-space: pre; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .fb-install [hidden] { display: none !important; }
+    .fb-install .fb-note { margin: 10px 0 0; color: var(--fb-muted); font-size: 14px; }
+  </style>
+  <div class="fb-options">
+    <button type="button" class="fb-primary" data-target="codex">Install with Codex <small>ChatGPT desktop app</small></button>
+    <button type="button" data-target="claude-desktop">Install with Claude <small>Code tab of the Claude app</small></button>
+    <button type="button" data-target="claude-code">Install with Claude Code <small>terminal</small></button>
+    <button type="button" data-target="copy">Copy the install command <small>run it yourself</small></button>
+  </div>
+  <p class="fb-note" role="status" hidden></p>
+  <pre hidden></pre>
+  <script>
+    (() => {
+      const root = document.currentScript.closest(".fb-install");
+      const repository = root.dataset.repository;
+      const raw = `https://raw.githubusercontent.com/${repository}/main`;
+      const commands = {
+        mac: `curl -fsSL ${raw}/install.sh | sh`,
+        windows: `irm ${raw}/install.ps1 | iex`
+      };
+      const isWindows = /^Win|Windows/i.test(navigator.userAgentData?.platform || navigator.platform || navigator.userAgent);
+      const command = isWindows ? commands.windows : commands.mac;
+      // Kept well under the 1,000 characters at which Claude Code starts warning about long prompts.
+      const prompt = [
+        `Install Figma Bridge (https://github.com/${repository}) on this computer.`,
+        `On macOS run in Terminal: ${commands.mac}`,
+        `On Windows run in PowerShell: ${commands.windows}`,
+        "Show me the command and wait for my confirmation before running it.",
+        "When it finishes, tell me the Figma plugin manifest path it printed, how to import it in Figma Desktop (Plugins > Development > Import plugin from manifest), and to connect it with This computer > Connect to this computer and the 6-digit code shown on screen."
+      ].join("\n");
+      const encoded = encodeURIComponent(prompt);
+      const links = {
+        codex: `codex://threads/new?prompt=${encoded}`,
+        "claude-desktop": `claude://code/new?q=${encoded}`,
+        "claude-code": `claude-cli://open?q=${encoded}`
+      };
+      const note = root.querySelector(".fb-note");
+      const fallback = root.querySelector("pre");
+
+      function show(message, text) {
+        note.textContent = message;
+        note.hidden = false;
+        fallback.textContent = text;
+        fallback.hidden = !text;
+      }
+
+      async function copy(text) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      for (const button of root.querySelectorAll("button[data-target]")) {
+        button.addEventListener("click", async () => {
+          const target = button.dataset.target;
+          if (target === "copy") {
+            const copied = await copy(command);
+            show(copied ? `Copied. Paste it into ${isWindows ? "PowerShell" : "Terminal"}.` : `Run this in ${isWindows ? "PowerShell" : "Terminal"}:`, command);
+            return;
+          }
+          await copy(prompt);
+          window.location.href = links[target];
+          // No browser reports whether the app opened; if the page keeps focus, offer the command.
+          setTimeout(() => {
+            if (document.hasFocus()) show("If nothing opened, install the app or run this command yourself. The request was also copied to the clipboard.", command);
+          }, 1500);
+        });
+      }
+    })();
+  </script>
+</div>

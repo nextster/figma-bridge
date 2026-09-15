@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { requestControl } from "../companion/src/client.mjs";
+import { requestControl } from "../plugins/figma-bridge/mcp/control.mjs";
 
 const clientId = valueAfter("--client");
 if (!clientId || !process.argv.includes("--mutate-temporary")) {

@@ -1,7 +1,7 @@
 {
   "name": "figma-bridge",
-  "version": "0.1.0+codex.20260901175215",
-  "description": "Inspect and edit open Figma Desktop files through a local authenticated bridge.",
+  "version": "0.2.0",
+  "description": "Inspect and edit open Figma files through the Figma Bridge plugin, locally or through a relay.",
   "author": {
     "name": "Artem"
   },
@@ -16,8 +16,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Figma Bridge",
-    "shortDescription": "Work with open Figma files locally",
-    "longDescription": "Inspect, create, update, export, and remove nodes in open Figma Desktop files through an authenticated localhost companion without the official remote MCP quota.",
+    "shortDescription": "Work with open Figma files",
+    "longDescription": "Inspect, create, update, export, and remove nodes in open Figma files through the authenticated Figma Bridge plugin, using the local companion or an invite-only relay, without the official remote MCP quota.",
     "developerName": "Artem",
     "category": "Productivity",
     "capabilities": [
