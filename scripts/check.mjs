@@ -38,6 +38,7 @@ for (const relative of [
   "companion/src/cli.mjs",
   "runtime/runtime-bootstrap.mjs",
   "plugins/figma-bridge/mcp/server.mjs",
+  "relay/src/oauth-store.mjs",
   "scripts/setup.mjs",
   "scripts/dev.mjs"
 ]) run(process.execPath, ["--check", path.join(root, relative)]);
