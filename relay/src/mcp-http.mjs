@@ -6,7 +6,7 @@ import { SERVER_VERSION, createMcpHandler, createToolExecutor } from "../../plug
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
-export function createMcpEndpoint({ oauth, gateway, assets, allowedOrigins = [], logger = console }) {
+export function createMcpEndpoint({ oauth, gateway, assets, limiter, allowedOrigins = [], logger = console }) {
   const origins = new Set(allowedOrigins);
 
   return async function handle(request, response) {
@@ -29,6 +29,12 @@ export function createMcpEndpoint({ oauth, gateway, assets, allowedOrigins = [],
         "www-authenticate": `Bearer resource_metadata="${oauth.resourceMetadataUrl}", error="invalid_token"`
       });
       response.end(`${JSON.stringify({ error: "invalid_token", error_description: "A valid Figma Bridge access token is required" })}\n`);
+      return;
+    }
+
+    if (limiter && !limiter.allow(`mcp:${grant.grantId}`, 600, 60_000)) {
+      response.writeHead(429, { "content-type": "application/json", "cache-control": "no-store", "retry-after": "60" });
+      response.end(`${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: "Too many requests" } })}\n`);
       return;
     }
 

@@ -41,6 +41,7 @@ export function createRelay({ config, db, logger = console, now = () => Date.now
     oauth,
     gateway,
     assets,
+    limiter,
     allowedOrigins: [new URL(oauth.issuer).origin, "https://claude.ai", "https://claude.com"],
     logger
   });
