@@ -8,7 +8,11 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [
   ".agents/plugins/marketplace.json",
+  ".claude-plugin/marketplace.json",
   "companion/src/server.mjs",
+  "fly.toml",
+  "plugins/figma-bridge/.claude-plugin/plugin.json",
+  "relay/Dockerfile",
   "runtime/runtime-bootstrap.mjs",
   "figma-plugin/manifest.json",
   "plugins/figma-bridge/.codex-plugin/plugin.json",
@@ -25,6 +29,8 @@ for (const relative of [
   ".agents/plugins/marketplace.json",
   "figma-plugin/manifest.json",
   "plugins/figma-bridge/.codex-plugin/plugin.json",
+  "plugins/figma-bridge/.claude-plugin/plugin.json",
+  ".claude-plugin/marketplace.json",
   "plugins/figma-bridge/.mcp.json"
 ]) JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
 
@@ -38,9 +44,19 @@ for (const relative of [
   "companion/src/cli.mjs",
   "runtime/runtime-bootstrap.mjs",
   "plugins/figma-bridge/mcp/server.mjs",
+  "relay/src/accounts-store.mjs",
+  "relay/src/app.mjs",
+  "relay/src/assets.mjs",
+  "relay/src/cli.mjs",
+  "relay/src/codes.mjs",
+  "relay/src/main.mjs",
+  "relay/src/mcp-http.mjs",
   "relay/src/oauth.mjs",
   "relay/src/oauth-store.mjs",
   "relay/src/oauth-page.mjs",
+  "relay/src/plugin-gateway.mjs",
+  "relay/src/rate-limit.mjs",
+  "scripts/lib/platform.mjs",
   "scripts/setup.mjs",
   "scripts/dev.mjs"
 ]) run(process.execPath, ["--check", path.join(root, relative)]);
