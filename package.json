@@ -23,5 +23,8 @@
   },
   "dependencies": {
     "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
   }
 }
