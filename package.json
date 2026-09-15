@@ -1,7 +1,7 @@
 {
   "name": "figma-bridge",
-  "version": "0.1.0",
-  "description": "Local, bidirectional bridge between Codex and Figma Desktop.",
+  "version": "0.2.0",
+  "description": "Bidirectional bridge between AI coding agents and open Figma files, locally or through a relay.",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -19,7 +19,8 @@
     "live:verify": "node scripts/live-verify.mjs",
     "dev:link": "node scripts/dev.mjs link",
     "dev:status": "node scripts/dev.mjs status",
-    "dev:unlink": "node scripts/dev.mjs unlink"
+    "dev:unlink": "node scripts/dev.mjs unlink",
+    "relay": "node --disable-warning=ExperimentalWarning relay/src/main.mjs"
   },
   "dependencies": {
     "ws": "8.21.3"

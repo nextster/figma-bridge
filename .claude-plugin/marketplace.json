@@ -1,0 +1,16 @@
+{
+  "name": "figma-bridge",
+  "owner": {
+    "name": "Artem"
+  },
+  "plugins": [
+    {
+      "name": "figma-bridge",
+      "source": "./plugins/figma-bridge",
+      "description": "Inspect and edit open Figma files through the Figma Bridge relay."
+    }
+  ],
+  "metadata": {
+    "description": "Figma Bridge plugin for Claude Code: inspect and edit open Figma files through the Figma Bridge relay."
+  }
+}

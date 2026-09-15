@@ -1,9 +1,8 @@
 {
   "mcpServers": {
     "figma-bridge": {
-      "command": "node",
-      "args": ["./mcp/server.mjs"],
-      "cwd": "."
+      "type": "http",
+      "url": "https://figma-bridge.fly.dev/mcp"
     }
   }
 }

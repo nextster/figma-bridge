@@ -5,125 +5,514 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root { color-scheme: light dark; font: 12px Inter, system-ui, sans-serif; }
-    body { margin: 0; padding: 18px; background: var(--figma-color-bg); color: var(--figma-color-text); }
-    h1 { margin: 0 0 8px; font-size: 18px; }
-    p { margin: 0 0 14px; color: var(--figma-color-text-secondary); line-height: 1.45; }
-    .status { padding: 10px 12px; border: 1px solid var(--figma-color-border); border-radius: 8px; margin-bottom: 14px; }
+    body { margin: 0; padding: 16px; background: var(--figma-color-bg); color: var(--figma-color-text); }
+    h1 { margin: 0 0 10px; font-size: 16px; }
+    p { margin: 0 0 10px; line-height: 1.45; }
+    .hint { color: var(--figma-color-text-secondary); }
+    .warning { color: var(--figma-color-text-warning, var(--figma-color-text-secondary)); }
+    .strong { font-weight: 600; }
+    #notice[data-tone="error"] { color: var(--figma-color-text-danger, var(--figma-color-text)); }
+    #notice[data-tone="ok"] { color: var(--figma-color-text-success, var(--figma-color-text)); }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; margin-bottom: 12px; border-radius: 8px; background: var(--figma-color-bg-secondary); }
+    .tabs button { background: transparent; color: var(--figma-color-text-secondary); font-weight: 500; }
+    .tabs button[aria-selected="true"] { background: var(--figma-color-bg); color: var(--figma-color-text); box-shadow: 0 0 0 1px var(--figma-color-border); }
+    .status { padding: 9px 11px; border: 1px solid var(--figma-color-border); border-radius: 8px; margin-bottom: 12px; overflow-wrap: anywhere; }
     .status[data-tone="ok"] { border-color: var(--figma-color-border-success); }
     .status[data-tone="error"] { border-color: var(--figma-color-border-danger); }
-    form { display: grid; gap: 8px; }
-    input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--figma-color-border); border-radius: 6px; background: var(--figma-color-bg-secondary); color: inherit; }
-    button { padding: 9px 12px; border: 0; border-radius: 6px; background: var(--figma-color-bg-brand); color: var(--figma-color-text-onbrand); font-weight: 600; }
-    button:disabled { opacity: .55; }
-    details { margin-top: 14px; color: var(--figma-color-text-secondary); }
-    summary { cursor: pointer; }
-    details form { margin-top: 10px; }
-    code { font-family: ui-monospace, monospace; }
+    form { display: grid; gap: 8px; margin: 0 0 10px; }
+    label { color: var(--figma-color-text-secondary); }
+    input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--figma-color-border); border-radius: 6px; background: var(--figma-color-bg-secondary); color: inherit; font: 13px ui-monospace, monospace; letter-spacing: .04em; }
+    button { padding: 8px 12px; border: 0; border-radius: 6px; background: var(--figma-color-bg-brand); color: var(--figma-color-text-onbrand); font-weight: 600; font-size: 12px; cursor: pointer; }
+    button.secondary { background: var(--figma-color-bg-secondary); color: var(--figma-color-text); }
+    button.link { background: none; padding: 4px 0; color: var(--figma-color-text-danger, var(--figma-color-text)); font-weight: 500; }
+    button:disabled { opacity: .55; cursor: default; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .card { padding: 11px; border: 1px solid var(--figma-color-border); border-radius: 8px; margin-bottom: 10px; }
+    .code { font: 600 18px ui-monospace, monospace; letter-spacing: .08em; text-align: center; margin: 6px 0 0; }
+    details { margin-top: 10px; }
+    summary { cursor: pointer; color: var(--figma-color-text-secondary); }
+    ul { list-style: none; margin: 8px 0 0; padding: 0; }
+    li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--figma-color-border); }
+    li span { overflow-wrap: anywhere; }
+    li button { padding: 4px 8px; }
   </style>
 </head>
 <body>
   <h1>Figma Bridge</h1>
-  <p>Keep this plugin open while Codex reads or edits this file.</p>
-  <div id="status" class="status">Waiting for local companion…</div>
-  <button id="connect" type="button">Connect to Codex</button>
-  <details id="manual">
-    <summary>Manual pairing</summary>
-    <form id="pairing">
-      <label for="token">Pairing token</label>
-      <input id="token" type="password" autocomplete="off">
-      <button type="submit">Use token</button>
-    </form>
-  </details>
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" data-mode="local">This computer</button>
+    <button type="button" role="tab" data-mode="relay">Relay</button>
+  </div>
+  <div id="status" class="status" role="status">Starting…</div>
+  <p id="notice" class="hint" role="alert" hidden></p>
+
+  <section id="local-view" hidden>
+    <p class="hint">Keep this plugin open while your AI app reads or edits this file. Requires the local companion from <code>npm run setup</code>.</p>
+    <button id="local-connect" type="button">Connect to this computer</button>
+    <details id="manual">
+      <summary>Manual pairing</summary>
+      <form id="pairing">
+        <label for="token">Pairing token</label>
+        <input id="token" type="password" autocomplete="off">
+        <button type="submit">Use token</button>
+      </form>
+    </details>
+  </section>
+
+  <section id="relay-view" hidden>
+    <div id="relay-register" hidden>
+      <p class="hint">Enter an invite code, or a link code shown in Figma Bridge where this relay account is already connected.</p>
+      <form id="register-form">
+        <label for="register-code">Invite or link code</label>
+        <input id="register-code" autocomplete="off" spellcheck="false" maxlength="20">
+        <button type="submit">Connect to relay</button>
+      </form>
+    </div>
+
+    <div id="relay-home" hidden>
+      <p class="hint">Keep this plugin open while your AI app reads or edits this file.</p>
+      <div class="row">
+        <button id="approve-start" type="button">Connect AI app</button>
+        <button id="link-start" type="button" class="secondary">Link another Figma</button>
+      </div>
+
+      <form id="approve-form" hidden>
+        <label for="approve-code">Code shown on the Figma Bridge page in your browser</label>
+        <input id="approve-code" autocomplete="off" spellcheck="false" maxlength="12">
+        <div class="row">
+          <button type="button" class="secondary" id="approve-cancel">Cancel</button>
+          <button type="submit">Continue</button>
+        </div>
+      </form>
+
+      <div id="approve-card" class="card" hidden>
+        <p class="strong">Allow <span id="approve-client"></span> to read and edit your Figma files through this relay?</p>
+        <p class="hint" id="approve-redirect"></p>
+        <p class="warning">Approve only a connection you started yourself in the last few minutes. Never approve a code someone sent you.</p>
+        <div class="row">
+          <button type="button" class="secondary" id="approve-deny">Deny</button>
+          <button type="button" id="approve-allow">Allow</button>
+        </div>
+      </div>
+
+      <div id="link-card" class="card" hidden>
+        <p>In Figma Bridge on the other device, choose Relay and enter this code within 10 minutes:</p>
+        <p class="code" id="link-code"></p>
+      </div>
+
+      <details id="grants-details">
+        <summary>Connected AI apps</summary>
+        <ul id="grants"></ul>
+      </details>
+      <details id="devices-details">
+        <summary>Devices</summary>
+        <ul id="devices"></ul>
+        <button id="forget" type="button" class="link">Disconnect this Figma from the relay</button>
+      </details>
+    </div>
+  </section>
+
   <script>
-    const status = document.getElementById('status');
-    const pairing = document.getElementById('pairing');
-    const connectButton = document.getElementById('connect');
-    const manual = document.getElementById('manual');
-    const tokenInput = document.getElementById('token');
-    let token = '';
-    let client = {};
-    let socket;
-    let retry;
+    const RELAY_URL = '__FIGMA_BRIDGE_RELAY_URL__';
+    const LOCAL_URL = 'ws://localhost:3847/bridge';
+    const $ = id => document.getElementById(id);
+    const status = $('status');
+    const views = { local: $('local-view'), relay: $('relay-view') };
+    const state = { mode: 'local', token: '', client: {}, relayDevice: null, connected: false, approval: null };
+    let socket = null;
+    let generation = 0;
+    let retry = null;
+    let retryDelay = 1500;
+    let callSequence = 0;
+    const calls = new Map();
+
+    const ERRORS = {
+      invalid_code: 'That code is not valid or has expired.',
+      rate_limited: 'Too many attempts. Wait a few minutes and try again.',
+      device_limit: 'This relay account already has the maximum number of devices.',
+      not_found: 'No pending connection matches this code. Start the connection again in your AI app.',
+      invalid_request: 'The relay rejected the request.',
+      server_error: 'The relay could not complete the request.',
+      disconnected: 'Not connected to the relay.'
+    };
+
+    function post(message) {
+      parent.postMessage({ pluginMessage: message }, '*');
+    }
 
     function setStatus(text, tone = '') {
       status.textContent = text;
       status.dataset.tone = tone;
+      resize();
     }
 
-    function setConnectedStatus() {
-      setStatus(`Connected · ${client.fileName || 'Figma'} · ${client.pageName || 'page'}`, 'ok');
+    function setNotice(text = '', tone = '') {
+      const notice = $('notice');
+      notice.textContent = text;
+      notice.dataset.tone = tone;
+      notice.hidden = !text;
+      resize();
     }
 
-    function connect(pair = false) {
+    function connectedText() {
+      const where = state.mode === 'relay' ? 'relay' : 'this computer';
+      return `Connected to ${where} · ${state.client.fileName || 'Figma'} · ${state.client.pageName || 'page'}`;
+    }
+
+    function resize() {
+      requestAnimationFrame(() => post({ type: 'resize', height: Math.min(720, Math.max(240, document.body.scrollHeight + 4)) }));
+    }
+
+    function render() {
+      for (const tab of document.querySelectorAll('[data-mode]')) tab.setAttribute('aria-selected', String(tab.dataset.mode === state.mode));
+      views.local.hidden = state.mode !== 'local';
+      views.relay.hidden = state.mode !== 'relay';
+      $('relay-register').hidden = !(state.mode === 'relay' && !state.relayDevice);
+      $('relay-home').hidden = !(state.mode === 'relay' && state.relayDevice);
+      $('local-connect').hidden = state.mode !== 'local' || state.connected;
+      $('manual').hidden = state.mode !== 'local' || state.connected;
+      resize();
+    }
+
+    function closeSocket() {
+      generation += 1;
       clearTimeout(retry);
-      if (!token && !pair) {
+      state.connected = false;
+      for (const [, call] of calls) call.reject(new Error('disconnected'));
+      calls.clear();
+      if (socket) {
+        const previous = socket;
+        socket = null;
+        previous.close();
+      }
+    }
+
+    function open(url, firstMessage, onMessage, onClose) {
+      closeSocket();
+      const current = generation;
+      const websocket = new WebSocket(url);
+      socket = websocket;
+      websocket.addEventListener('open', () => {
+        if (current === generation) websocket.send(JSON.stringify(firstMessage));
+      });
+      websocket.addEventListener('message', event => {
+        if (current !== generation) return;
+        let message;
+        try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type === 'rpc.request') {
+          post({ type: 'bridge-command', id: message.id, command: message.command, arguments: message.arguments });
+          return;
+        }
+        onMessage(message);
+      });
+      websocket.addEventListener('close', event => {
+        if (current !== generation) return;
+        socket = null;
+        state.connected = false;
+        for (const [, call] of calls) call.reject(new Error('disconnected'));
+        calls.clear();
+        onClose(event);
+        render();
+      });
+    }
+
+    function scheduleRetry(connect) {
+      clearTimeout(retry);
+      retry = setTimeout(connect, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 30000);
+    }
+
+    function markConnected() {
+      state.connected = true;
+      retryDelay = 1500;
+      setStatus(connectedText(), 'ok');
+      render();
+    }
+
+    // Local mode: the companion on this computer.
+    function connectLocal(pair = false) {
+      if (!state.token && !pair) {
+        closeSocket();
         setStatus('Ready to connect.');
-        connectButton.hidden = false;
-        manual.hidden = false;
+        render();
         return;
       }
-      connectButton.disabled = pair;
-      setStatus(pair ? 'Waiting for approval…' : 'Connecting to local companion…');
-      socket = new WebSocket('ws://localhost:3847/bridge');
-      socket.addEventListener('open', () => socket.send(JSON.stringify(pair
-        ? { type: 'pair', client }
-        : { type: 'auth', token, client })));
-      socket.addEventListener('message', event => {
-        const message = JSON.parse(event.data);
+      $('local-connect').disabled = pair;
+      setStatus(pair ? 'Approve the request on this computer…' : 'Connecting to this computer…');
+      open(LOCAL_URL, pair ? { type: 'pair', client: state.client } : { type: 'auth', token: state.token, client: state.client }, message => {
         if (message.type === 'pair.ok') {
-          token = message.token || '';
-          parent.postMessage({ pluginMessage: { type: 'store-token', token } }, '*');
+          state.token = message.token || '';
+          post({ type: 'store-token', token: state.token });
         } else if (message.type === 'auth.ok') {
-          connectButton.disabled = false;
-          connectButton.hidden = true;
-          manual.hidden = true;
-          setConnectedStatus();
-        } else if (message.type === 'rpc.request') {
-          parent.postMessage({ pluginMessage: { type: 'bridge-command', id: message.id, command: message.command, arguments: message.arguments } }, '*');
+          $('local-connect').disabled = false;
+          markConnected();
         }
-      });
-      socket.addEventListener('close', event => {
-        connectButton.disabled = false;
-        setStatus(event.code === 4403 ? 'Connection was not approved.' : 'Companion disconnected; retrying…', 'error');
+      }, event => {
+        $('local-connect').disabled = false;
         if (event.code === 4403) {
-          token = '';
-          connectButton.hidden = false;
-          manual.hidden = false;
+          state.token = '';
+          setStatus('Connection was not approved.', 'error');
+        } else {
+          setStatus('Local companion is not reachable; retrying…', 'error');
+          if (state.token) scheduleRetry(() => connectLocal(false));
         }
-        else retry = setTimeout(connect, 1500);
       });
-      socket.addEventListener('error', () => setStatus('Cannot reach local companion; retrying…', 'error'));
     }
 
-    pairing.addEventListener('submit', event => {
+    // Relay mode: the hosted relay authenticates this plugin as a device.
+    function connectRelay(registration) {
+      if (!state.relayDevice && !registration) {
+        closeSocket();
+        setStatus('Not connected to a relay yet.');
+        render();
+        return;
+      }
+      setStatus(registration ? 'Checking code…' : 'Connecting to relay…');
+      const first = registration
+        ? { type: 'register', code: registration.code, deviceName: deviceName(), client: state.client }
+        : { type: 'hello', device: state.relayDevice, client: state.client };
+      open(RELAY_URL, first, message => {
+        if (message.type === 'register.ok') {
+          state.relayDevice = { id: message.device.id, secret: message.device.secret, accountId: message.accountId };
+          post({ type: 'store-relay-device', device: state.relayDevice });
+          $('register-code').value = '';
+          markConnected();
+          refreshLists();
+        } else if (message.type === 'hello.ok') {
+          markConnected();
+          refreshLists();
+        } else if (message.type === 'register.error') {
+          $('register-form').querySelector('button').disabled = false;
+          setStatus(ERRORS[message.error] || ERRORS.server_error, 'error');
+          closeSocket();
+        } else if (message.type === 'call.result') {
+          const call = calls.get(message.id);
+          if (!call) return;
+          calls.delete(message.id);
+          if (message.ok) call.resolve(message.result);
+          else call.reject(new Error(message.error || 'server_error'));
+        } else if (message.type === 'notice' && message.notice?.kind === 'grant_revoked') {
+          setNotice(`Disconnected ${message.notice.clientName || 'an AI app'} because its refresh token was reused.`, 'error');
+          refreshLists();
+        }
+      }, event => {
+        $('register-form').querySelector('button').disabled = false;
+        if (event.code === 4403 && state.relayDevice) {
+          state.relayDevice = null;
+          post({ type: 'forget-relay-device' });
+          setStatus('This Figma was disconnected from the relay. Enter a new invite or link code.', 'error');
+        } else if (state.relayDevice) {
+          setStatus('Relay is not reachable; retrying…', 'error');
+          scheduleRetry(() => connectRelay());
+        }
+      });
+    }
+
+    function call(method, params = {}) {
+      if (!socket || socket.readyState !== WebSocket.OPEN || !state.connected) return Promise.reject(new Error('disconnected'));
+      const id = `ui-${++callSequence}`;
+      return new Promise((resolve, reject) => {
+        calls.set(id, { resolve, reject });
+        socket.send(JSON.stringify({ type: 'call', id, method, params }));
+      });
+    }
+
+    function deviceName() {
+      const agent = navigator.userAgent;
+      const platform = /Windows/.test(agent) ? 'Windows' : /Mac OS X|Macintosh/.test(agent) ? 'macOS' : /Linux/.test(agent) ? 'Linux' : 'unknown system';
+      return `Figma on ${platform}`;
+    }
+
+    function errorText(error) {
+      return ERRORS[error?.message] || ERRORS.server_error;
+    }
+
+    function formatCodeInput(input, groups) {
+      const raw = input.value.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, groups * 4);
+      input.value = raw.match(/.{1,4}/g)?.join('-') || '';
+    }
+
+    async function refreshLists() {
+      try {
+        renderList($('grants'), await call('grants.list'), grant => [
+          `${grant.clientName} · since ${new Date(grant.createdAt).toLocaleDateString()}`,
+          'Revoke',
+          async () => { await call('grants.revoke', { grantId: grant.grantId }); refreshLists(); }
+        ], 'No AI apps are connected.');
+        renderList($('devices'), await call('devices.list'), device => [
+          `${device.name}${device.current ? ' (this Figma)' : ''} · last seen ${new Date(device.lastSeenAt).toLocaleDateString()}`,
+          device.current ? null : 'Remove',
+          async () => { await call('devices.revoke', { deviceId: device.deviceId }); refreshLists(); }
+        ], 'No devices.');
+      } catch (error) {
+        if (error.message !== 'disconnected') setNotice(errorText(error), 'error');
+      }
+    }
+
+    function renderList(list, items, describe, emptyText) {
+      list.replaceChildren();
+      if (!items.length) {
+        const empty = document.createElement('li');
+        empty.textContent = emptyText;
+        list.append(empty);
+      }
+      for (const item of items) {
+        const [text, actionLabel, action] = describe(item);
+        const row = document.createElement('li');
+        const label = document.createElement('span');
+        label.textContent = text;
+        row.append(label);
+        if (actionLabel) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'secondary';
+          button.textContent = actionLabel;
+          button.addEventListener('click', () => action().catch(error => setNotice(errorText(error), 'error')));
+          row.append(button);
+        }
+        list.append(row);
+      }
+      resize();
+    }
+
+    function resetApproval() {
+      state.approval = null;
+      $('approve-form').hidden = true;
+      $('approve-card').hidden = true;
+      $('approve-code').value = '';
+      $('approve-start').disabled = false;
+      resize();
+    }
+
+    for (const tab of document.querySelectorAll('[data-mode]')) {
+      tab.addEventListener('click', () => {
+        if (state.mode === tab.dataset.mode) return;
+        state.mode = tab.dataset.mode;
+        post({ type: 'set-mode', mode: state.mode });
+        setNotice();
+        resetApproval();
+        $('link-card').hidden = true;
+        render();
+        if (state.mode === 'local') connectLocal(false);
+        else connectRelay();
+      });
+    }
+
+    $('local-connect').addEventListener('click', () => connectLocal(true));
+
+    $('pairing').addEventListener('submit', event => {
       event.preventDefault();
-      const value = tokenInput.value.trim();
-      parent.postMessage({ pluginMessage: { type: 'save-token', token: value } }, '*');
+      post({ type: 'save-token', token: $('token').value.trim() });
     });
 
-    connectButton.addEventListener('click', () => connect(true));
+    $('register-code').addEventListener('input', event => formatCodeInput(event.target, 3));
+    $('register-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const code = $('register-code').value.trim();
+      if (code.replace(/-/g, '').length < 8) {
+        setStatus('Enter the full code.', 'error');
+        return;
+      }
+      event.target.querySelector('button').disabled = true;
+      connectRelay({ code });
+    });
+
+    $('approve-start').addEventListener('click', () => {
+      $('link-card').hidden = true;
+      $('approve-form').hidden = false;
+      $('approve-card').hidden = true;
+      $('approve-start').disabled = true;
+      $('approve-code').focus();
+      resize();
+    });
+    $('approve-cancel').addEventListener('click', resetApproval);
+    $('approve-code').addEventListener('input', event => formatCodeInput(event.target, 2));
+    $('approve-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        const request = await call('approval.lookup', { code: $('approve-code').value });
+        state.approval = request;
+        $('approve-client').textContent = `“${request.clientName}”`;
+        $('approve-redirect').textContent = request.redirectKind === 'claude'
+          ? 'Access will be returned to Claude (claude.ai) in your browser.'
+          : request.redirectKind === 'loopback'
+            ? 'Access will be returned to an app on the computer where the browser page is open.'
+            : `Access will be returned to ${request.redirectHost}.`;
+        $('approve-form').hidden = true;
+        $('approve-card').hidden = false;
+        setNotice();
+      } catch (error) {
+        setNotice(errorText(error), 'error');
+      }
+    });
+    for (const [id, approve] of [['approve-allow', true], ['approve-deny', false]]) {
+      $(id).addEventListener('click', async () => {
+        if (!state.approval) return;
+        try {
+          const result = await call('approval.decide', { requestId: state.approval.requestId, approve });
+          setNotice(result.status === 'approved'
+            ? `Approved. Return to your browser; ${state.approval.clientName} will finish connecting.`
+            : 'Connection denied.', result.status === 'approved' ? 'ok' : '');
+          resetApproval();
+          refreshLists();
+        } catch (error) {
+          setNotice(errorText(error), 'error');
+          resetApproval();
+        }
+      });
+    }
+
+    $('link-start').addEventListener('click', async () => {
+      resetApproval();
+      try {
+        const link = await call('devices.link');
+        $('link-code').textContent = link.code;
+        $('link-card').hidden = false;
+        setNotice();
+      } catch (error) {
+        setNotice(errorText(error), 'error');
+      }
+    });
+
+    $('grants-details').addEventListener('toggle', resize);
+    $('devices-details').addEventListener('toggle', resize);
+    $('forget').addEventListener('click', async () => {
+      if (!state.relayDevice) return;
+      try { await call('devices.revoke', { deviceId: state.relayDevice.id }); } catch { /* The relay may already be unreachable. */ }
+      state.relayDevice = null;
+      post({ type: 'forget-relay-device' });
+      closeSocket();
+      setStatus('Disconnected from the relay.');
+      render();
+    });
 
     window.addEventListener('message', event => {
       const message = event.data.pluginMessage;
       if (!message) return;
-      if (message.type === 'bridge-init' || message.type === 'token-saved') {
-        token = message.token || '';
-        client = message.client || {};
-        tokenInput.value = '';
-        if (socket) socket.close();
-        connect();
+      if (message.type === 'bridge-init') {
+        state.token = message.token || '';
+        state.mode = message.mode === 'relay' ? 'relay' : 'local';
+        state.relayDevice = message.relayDevice || null;
+        state.client = message.client || {};
+        render();
+        if (state.mode === 'local') connectLocal(false);
+        else connectRelay();
+      } else if (message.type === 'token-saved') {
+        state.token = message.token || '';
+        $('token').value = '';
+        connectLocal(false);
       } else if (message.type === 'bridge-response' && socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: 'rpc.response', id: message.id, ok: message.ok, result: message.result, error: message.error }));
       } else if (message.type === 'client-update') {
-        client = message.client || client;
-        if (socket?.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'client.update', client }));
-          setConnectedStatus();
+        state.client = message.client || state.client;
+        if (socket?.readyState === WebSocket.OPEN && state.connected) {
+          socket.send(JSON.stringify({ type: 'client.update', client: state.client }));
+          setStatus(connectedText(), 'ok');
         }
       }
     });
 
-    parent.postMessage({ pluginMessage: { type: 'ui-ready' } }, '*');
+    post({ type: 'ui-ready' });
   </script>
 </body>
 </html>

@@ -44,7 +44,7 @@ const flags = new Set(process.argv.slice(2));
 const launchdAllowed = platform === "darwin" && path.resolve(os.homedir()) === path.resolve(os.userInfo().homedir);
 
 for (const flag of flags) {
-  if (!["--uninstall", "--no-codex", "--no-claude", "--claude-desktop", "--no-autostart"].includes(flag)) {
+  if (!["--uninstall", "--no-codex", "--no-claude", "--claude-desktop", "--no-autostart", "--relay"].includes(flag)) {
     throw new Error(`unknown setup option: ${flag}`);
   }
 }
@@ -54,11 +54,16 @@ if (flags.has("--uninstall")) {
   process.exit(0);
 }
 
+const relayMode = flags.has("--relay");
+const relayMcpUrl = relayMode ? repositoryRelayUrl() : null;
+
 requireFile(path.join(root, "node_modules", "ws", "package.json"), "Run npm install first");
 run(process.execPath, [path.join(root, "figma-plugin", "scripts", "build.mjs")]);
-installRuntime();
+if (!relayMode) installRuntime();
 
-if (flags.has("--no-autostart")) {
+if (relayMode) {
+  process.stdout.write(`Relay mode: MCP clients will use ${relayMcpUrl}; no local companion is installed.\n`);
+} else if (flags.has("--no-autostart")) {
   process.stdout.write("Skipped companion autostart; MCP clients start it on demand.\n");
 } else if (platform === "darwin" && launchdAllowed) {
   await installLaunchAgent();
@@ -77,7 +82,9 @@ if (!flags.has("--no-claude") && findExecutable("claude")) {
   installClaudeCodePlugin();
   configured.push("Claude Code");
 }
-if (flags.has("--claude-desktop")) {
+if (flags.has("--claude-desktop") && relayMode) {
+  process.stdout.write(`Claude Desktop and claude.ai: add ${relayMcpUrl} under Settings -> Connectors -> Add custom connector.\n`);
+} else if (flags.has("--claude-desktop")) {
   installClaudeDesktop();
   configured.push("Claude Desktop");
 }
@@ -86,6 +93,9 @@ process.stdout.write(`Installed Figma Bridge runtime ${packageJson.version}.\n`)
 process.stdout.write(`Configured MCP clients: ${configured.length ? configured.join(", ") : "none found"}.\n`);
 process.stdout.write(`Figma manifest: ${path.join(root, "figma-plugin", "manifest.json")}\n`);
 process.stdout.write("Open a new AI task or session after installing or changing MCP tools; restarting the app is not required, except for Claude Desktop.\n");
+if (relayMode) {
+  process.stdout.write("Sign in once per client: run `codex mcp login figma-bridge` for Codex, and use /mcp in Claude Code. Approve each connection in the Figma Bridge plugin under Relay -> Connect AI app.\n");
+}
 
 function installRuntime() {
   fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -147,7 +157,7 @@ function installCodexPlugin() {
   fs.mkdirSync(manifestDir, { recursive: true, mode: 0o700 });
   fs.rmSync(temporary, { recursive: true, force: true });
   copyTree(path.join(root, "plugins", "figma-bridge"), temporary, { exclude: [".claude-plugin"] });
-  writePrivateJson(path.join(temporary, ".mcp.json"), localMcpConfig({ cwd: destination }));
+  writePrivateJson(path.join(temporary, ".mcp.json"), relayMode ? relayMcpConfig() : localMcpConfig({ cwd: destination }));
   fs.rmSync(destination, { recursive: true, force: true });
   fs.renameSync(temporary, destination);
 
@@ -186,7 +196,7 @@ function installClaudeCodePlugin() {
   const pluginManifest = claudePluginManifest();
   fs.mkdirSync(path.join(temporary, "plugins", "figma-bridge", ".claude-plugin"), { recursive: true });
   writePrivateJson(path.join(temporary, "plugins", "figma-bridge", ".claude-plugin", "plugin.json"), pluginManifest);
-  writePrivateJson(path.join(temporary, "plugins", "figma-bridge", ".mcp.json"), localMcpConfig({ cwd: pluginDestination }));
+  writePrivateJson(path.join(temporary, "plugins", "figma-bridge", ".mcp.json"), relayMode ? relayMcpConfig() : localMcpConfig({ cwd: pluginDestination }));
   fs.mkdirSync(path.join(temporary, ".claude-plugin"), { recursive: true });
   writePrivateJson(path.join(temporary, ".claude-plugin", "marketplace.json"), {
     name: CLAUDE_MARKETPLACE_NAME,
@@ -245,6 +255,17 @@ async function uninstall() {
     }
   }
   process.stdout.write("Figma Bridge autostart and Claude integrations were removed. Codex plugin entries, pairing state, and versioned runtimes were preserved.\n");
+}
+
+function relayMcpConfig() {
+  return { mcpServers: { "figma-bridge": { type: "http", url: relayMcpUrl } } };
+}
+
+function repositoryRelayUrl() {
+  const configured = process.env.FIGMA_BRIDGE_RELAY_MCP_URL;
+  const url = configured || JSON.parse(fs.readFileSync(path.join(root, "plugins", "figma-bridge", ".mcp.json"), "utf8")).mcpServers?.["figma-bridge"]?.url;
+  if (typeof url !== "string" || !/^https:\/\/[^/]+\/mcp$/.test(url)) throw new Error("Set FIGMA_BRIDGE_RELAY_MCP_URL to https://<relay-host>/mcp");
+  return url;
 }
 
 function localMcpConfig({ cwd }) {

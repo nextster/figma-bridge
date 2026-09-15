@@ -15,7 +15,7 @@ import {
 } from "../../plugins/figma-bridge/mcp/control.mjs";
 import { cleanError, createFigmaHub } from "./hub.mjs";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const DEFAULT_PORT = 3847;
 const MAX_WS_BYTES = 8 * 1024 * 1024;
 const STARTUP_CLIENT_WAIT_MS = 4000;

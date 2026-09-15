@@ -49,27 +49,72 @@ type CommandMessage = {
   arguments?: Record<string, unknown>;
 };
 
-figma.showUI(__html__, { width: 360, height: 300, themeColors: true });
+type BridgeMode = "local" | "relay";
+type RelayDevice = { id: string; secret: string; accountId: string };
+type UiMessage =
+  | CommandMessage
+  | { type: "ui-ready" }
+  | { type: "save-token" | "store-token"; token: string }
+  | { type: "set-mode"; mode: BridgeMode }
+  | { type: "store-relay-device"; device: RelayDevice }
+  | { type: "forget-relay-device" }
+  | { type: "resize"; height: number };
+
+const TOKEN_KEY = "figma-bridge-token";
+const MODE_KEY = "figma-bridge-mode";
+const RELAY_DEVICE_KEY = "figma-bridge-relay-device";
+
+figma.showUI(__html__, { width: 360, height: 360, themeColors: true });
 
 void initialize();
 
 async function initialize(): Promise<void> {
-  const token = await figma.clientStorage.getAsync("figma-bridge-token");
-  figma.ui.postMessage({ type: "bridge-init", token: typeof token === "string" ? token : "", client: clientInfo() });
+  const [token, mode, relayDevice] = await Promise.all([
+    figma.clientStorage.getAsync(TOKEN_KEY),
+    figma.clientStorage.getAsync(MODE_KEY),
+    figma.clientStorage.getAsync(RELAY_DEVICE_KEY)
+  ]);
+  figma.ui.postMessage({
+    type: "bridge-init",
+    token: typeof token === "string" ? token : "",
+    mode: mode === "relay" ? "relay" : "local",
+    relayDevice: parseRelayDevice(relayDevice),
+    client: clientInfo()
+  });
 }
 
-figma.ui.onmessage = async (message: CommandMessage | { type: "save-token" | "store-token"; token: string } | { type: "ui-ready" }) => {
-  if (message.type === "ui-ready") {
-    await initialize();
-    return;
+figma.ui.onmessage = async (message: UiMessage) => {
+  switch (message.type) {
+    case "ui-ready":
+      await initialize();
+      return;
+    case "save-token":
+    case "store-token": {
+      const token = stringIn(message.token, 40, 200, "Pairing token");
+      await figma.clientStorage.setAsync(TOKEN_KEY, token);
+      if (message.type === "save-token") figma.ui.postMessage({ type: "token-saved", token, client: clientInfo() });
+      return;
+    }
+    case "set-mode":
+      await figma.clientStorage.setAsync(MODE_KEY, message.mode === "relay" ? "relay" : "local");
+      return;
+    case "store-relay-device": {
+      const device = parseRelayDevice(message.device);
+      if (!device) throw new Error("Invalid relay device");
+      await figma.clientStorage.setAsync(RELAY_DEVICE_KEY, device);
+      return;
+    }
+    case "forget-relay-device":
+      await figma.clientStorage.deleteAsync(RELAY_DEVICE_KEY);
+      return;
+    case "resize":
+      figma.ui.resize(360, Math.round(numberIn(message.height, 240, 720, "UI height")));
+      return;
+    case "bridge-command":
+      break;
+    default:
+      return;
   }
-  if (message.type === "save-token" || message.type === "store-token") {
-    const token = stringIn(message.token, 40, 200, "Pairing token");
-    await figma.clientStorage.setAsync("figma-bridge-token", token);
-    if (message.type === "save-token") figma.ui.postMessage({ type: "token-saved", token, client: clientInfo() });
-    return;
-  }
-  if (message.type !== "bridge-command") return;
   try {
     const result = await dispatch(message.command, message.arguments || {});
     figma.ui.postMessage({ type: "bridge-response", id: message.id, ok: true, result });
@@ -83,6 +128,14 @@ figma.ui.onmessage = async (message: CommandMessage | { type: "save-token" | "st
     });
   }
 };
+
+function parseRelayDevice(value: unknown): RelayDevice | null {
+  if (!value || typeof value !== "object") return null;
+  const { id, secret, accountId } = value as Record<string, unknown>;
+  if (typeof id !== "string" || typeof secret !== "string" || typeof accountId !== "string") return null;
+  if (!/^fbd_[A-Za-z0-9_-]{8,64}$/.test(id) || !/^fbs_[A-Za-z0-9_-]{40,64}$/.test(secret) || accountId.length > 128) return null;
+  return { id, secret, accountId };
+}
 
 figma.on("selectionchange", () => figma.ui.postMessage({ type: "client-update", client: clientInfo() }));
 figma.on("currentpagechange", () => figma.ui.postMessage({ type: "client-update", client: clientInfo() }));

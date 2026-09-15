@@ -2,8 +2,10 @@
 // hosted relay. Every tool maps to a named, validated Figma plugin command.
 
 export const SERVER_NAME = "figma-bridge";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.2.0";
 export const DEFAULT_PROTOCOL = "2025-06-18";
+// Versions whose tools-only surface this server implements unchanged.
+export const SUPPORTED_PROTOCOLS = Object.freeze(["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]);
 export const MAX_HANDOFF_BYTES = 64 * 1024 * 1024;
 
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -530,8 +532,9 @@ export function createMcpHandler({ callTool, localFiles = true, remote = false, 
     const isNotification = id === undefined;
     try {
       if (method === "initialize") {
+        const requested = message.params?.protocolVersion;
         return rpcResult(id, {
-          protocolVersion: typeof message.params?.protocolVersion === "string" ? message.params.protocolVersion : DEFAULT_PROTOCOL,
+          protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : DEFAULT_PROTOCOL,
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
           instructions: serverInstructions({ remote })
