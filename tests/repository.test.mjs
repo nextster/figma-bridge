@@ -67,3 +67,41 @@ test("repository contains no arbitrary evaluation command", () => {
     assert.doesNotMatch(source, /\beval\s*\(|new Function\s*\(/);
   }
 });
+
+test("website install button opens agent apps with a short installation request", async () => {
+  const html = fs.readFileSync(path.join(root, "docs/site/install-button.html"), "utf8");
+  const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
+  const buttons = ["codex", "claude-desktop", "claude-code", "copy"].map(target => {
+    const listeners = {};
+    return { dataset: { target }, addEventListener: (type, fn) => { listeners[type] = fn; }, click: () => listeners.click() };
+  });
+  const clipboard = [];
+  const note = { hidden: true, textContent: "" };
+  const fallback = { hidden: true, textContent: "" };
+  const rootElement = {
+    dataset: { repository: "nextster/figma-bridge" },
+    querySelector: selector => (selector === "pre" ? fallback : note),
+    querySelectorAll: () => buttons
+  };
+  const location = { href: "" };
+  const context = vm.createContext({
+    document: { currentScript: { closest: () => rootElement }, hasFocus: () => false },
+    navigator: { platform: "Win32", userAgent: "Windows", clipboard: { writeText: async text => { clipboard.push(text); } } },
+    window: { location },
+    setTimeout: () => {}
+  });
+  vm.runInContext(script, context);
+  await buttons[0].click();
+  const prompt = decodeURIComponent(location.href.replace("codex://threads/new?prompt=", ""));
+  assert.match(location.href, /^codex:\/\/threads\/new\?prompt=/);
+  assert.ok(prompt.length < 1000, `prompt has ${prompt.length} characters`);
+  assert.match(prompt, /irm https:\/\/raw\.githubusercontent\.com\/nextster\/figma-bridge\/main\/install\.ps1 \| iex/);
+  assert.match(prompt, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/nextster\/figma-bridge\/main\/install\.sh \| sh/);
+  await buttons[1].click();
+  assert.match(location.href, /^claude:\/\/code\/new\?q=/);
+  await buttons[2].click();
+  assert.match(location.href, /^claude-cli:\/\/open\?q=/);
+  await buttons[3].click();
+  assert.equal(clipboard.at(-1), "irm https://raw.githubusercontent.com/nextster/figma-bridge/main/install.ps1 | iex");
+  assert.equal(fallback.hidden, false);
+});

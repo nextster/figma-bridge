@@ -75,6 +75,8 @@ for (const [validator, target] of [
   else process.stdout.write(`Skipped optional Codex validator: ${validator}\n`);
 }
 
+if (process.platform !== "win32") run("sh", ["-n", path.join(root, "install.sh")]);
+
 if (fs.existsSync(path.join(root, ".git"))) run("git", ["-C", root, "diff", "--check"]);
 
 function run(program, args) {

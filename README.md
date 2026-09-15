@@ -42,25 +42,35 @@ The public Plugin API does not expose shader source code. When source is require
 
 Domain-specific generators, such as an exact SDF smooth-union generator, are intentionally not coupled to the transport layer. Add them as focused bridge commands without widening the generic document API.
 
-## Install the Figma plugin
+## Install
 
-Figma Bridge is a development plugin, so it runs in Figma Desktop on macOS and Windows. Publishing is not available; see [docs/PUBLISHING.md](docs/PUBLISHING.md).
+On macOS, run in Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nextster/figma-bridge/main/install.sh | sh
+```
+
+On Windows, run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/nextster/figma-bridge/main/install.ps1 | iex
+```
+
+Or ask your agent to do it: [docs/site/install-button.html](docs/site/install-button.html) is a website fragment whose buttons open Codex, the Claude desktop app, or Claude Code with this request already typed in. The installer uses Node.js 22 or newer when present and otherwise installs a pinned, SHA-256-verified Node.js under `~/.figma-bridge`, then runs the same setup as a checkout. Pass options after `sh -s --` on macOS, or through `& ([scriptblock]::Create((irm …/install.ps1))) --no-claude-desktop` on Windows; use the `uninstall` command to remove it.
+
+Figma Bridge is a development plugin, so it runs in Figma Desktop on macOS and Windows; publishing is not available (see [docs/PUBLISHING.md](docs/PUBLISHING.md)). After installing, choose **Plugins → Development → Import plugin from manifest** in Figma Desktop and select `~/.figma-bridge/figma-plugin/manifest.json` (`%USERPROFILE%\.figma-bridge\figma-plugin\manifest.json` on Windows); setup prints the exact path. Run **Figma Bridge** in every file the agent should use and keep it open.
+
+## Local mode
+
+From a checkout:
 
 ```bash
 npm install
 npm --prefix figma-plugin install
-npm run build
-```
-
-In Figma Desktop choose **Plugins → Development → Import plugin from manifest** and select [figma-plugin/manifest.json](figma-plugin/manifest.json). Run **Figma Bridge** in every file the agent should use and keep it open.
-
-## Local mode
-
-```bash
 npm run setup
 ```
 
-Setup installs a versioned runtime under `~/.figma-bridge` (`%USERPROFILE%\.figma-bridge` on Windows) and registers Figma Bridge with every client it finds:
+Setup builds the Figma plugin, installs a versioned runtime under `~/.figma-bridge` (`%USERPROFILE%\.figma-bridge` on Windows) and registers Figma Bridge with every client it finds:
 
 - **Codex and Claude Code** (CLI and the Code tab of the Claude desktop app) install `figma-bridge@nextster`, including the skill, from the marketplace shared with other Nextster bridges in `~/.agent-plugins/nextster` (`NEXTSTER_MARKETPLACE_DIR` overrides it). One plugin directory carries both client manifests; setup adds its entries to both manifests without touching other bridges, and moves or merges an older `~/.codex/marketplaces/nextster` copy there.
 - **Claude Desktop chat** gets a `figma-bridge` entry in `claude_desktop_config.json` whenever Claude Desktop is installed. Other settings are preserved and the previous file is kept as `claude_desktop_config.json.figma-bridge-backup`; quit and reopen Claude Desktop afterwards.

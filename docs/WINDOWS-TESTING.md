@@ -4,9 +4,9 @@ GitHub Actions does not run on Windows yet. Use this checklist on a Windows 10 o
 
 ## Local mode
 
-1. Clone the repository into a path that contains a space or non-ASCII characters, for example `C:\Users\<you>\Code\figma bridge`.
-2. In PowerShell run `npm install`, `npm --prefix figma-plugin install`, and `npm run verify`.
-3. Run `npm run setup`. Expect `Configured MCP clients:` to list the installed clients and no errors about `.cmd` files.
+1. Run the installer in PowerShell: `irm https://raw.githubusercontent.com/nextster/figma-bridge/main/install.ps1 | iex` (after the repository is public; until then clone it and set `$env:FIGMA_BRIDGE_SOURCE_DIR` to the checkout before running `install.ps1`). Test once without Node.js installed to exercise the verified portable runtime.
+2. Separately, clone the repository into a path that contains a space or non-ASCII characters, for example `C:\Users\<you>\Code\figma bridge`, and run `npm install`, `npm --prefix figma-plugin install`, and `npm run verify`.
+3. Run `npm run setup` from that checkout. Expect `Configured MCP clients:` to list the installed clients and no errors about `.cmd` files.
 4. Check `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Figma Bridge companion.vbs` exists and that `npm run bridge -- status` prints `"platform": "win32"` and a `\\.\pipe\figma-bridge-…` control endpoint.
 5. In Figma Desktop import `figma-plugin\manifest.json`, run Figma Bridge, choose **This computer → Connect to this computer**, and type the 6-digit code from the Figma Bridge popup into the plugin. Expect `Connected to this computer`.
 6. In a new Claude Code or Codex session ask for `list_files`, `snapshot`, and `export_png`. Expect the open file and an image.

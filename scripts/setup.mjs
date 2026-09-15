@@ -57,6 +57,7 @@ const relayMcpUrl = relayMode ? repositoryRelayUrl() : null;
 
 requireFile(path.join(root, "node_modules", "ws", "package.json"), "Run npm install first");
 run(process.execPath, [path.join(root, "figma-plugin", "scripts", "build.mjs")]);
+const figmaManifest = installFigmaPlugin();
 if (!relayMode) installRuntime();
 
 if (relayMode) {
@@ -92,10 +93,25 @@ if (!flags.has("--no-claude") && !flags.has("--no-claude-desktop")) {
 
 process.stdout.write(`Installed Figma Bridge runtime ${packageJson.version}.\n`);
 process.stdout.write(`Configured MCP clients: ${configured.length ? configured.join(", ") : "none found"}.\n`);
-process.stdout.write(`Figma manifest: ${path.join(root, "figma-plugin", "manifest.json")}\n`);
+process.stdout.write(`Figma plugin: in Figma Desktop choose Plugins -> Development -> Import plugin from manifest, and select ${figmaManifest}\n`);
 process.stdout.write("Open a new AI task or session after installing or changing MCP tools; restarting the app is not required, except for Claude Desktop.\n");
 if (relayMode) {
   process.stdout.write("Sign in once per client: run `codex mcp login figma-bridge` for Codex, and use /mcp in Claude Code. Approve each connection in the Figma Bridge plugin under Relay -> Connect AI app.\n");
+}
+
+// The built plugin is copied to a stable location so the manifest imported in
+// Figma keeps working when the installer's temporary source is removed.
+function installFigmaPlugin() {
+  const destination = path.join(stateDir, "figma-plugin");
+  const temporary = path.join(stateDir, `.figma-plugin.tmp-${process.pid}`);
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  fs.rmSync(temporary, { recursive: true, force: true });
+  fs.mkdirSync(temporary, { recursive: true });
+  fs.copyFileSync(path.join(root, "figma-plugin", "manifest.json"), path.join(temporary, "manifest.json"));
+  copyTree(path.join(root, "figma-plugin", "dist"), path.join(temporary, "dist"));
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.renameSync(temporary, destination);
+  return path.join(destination, "manifest.json");
 }
 
 function installRuntime() {
