@@ -88,6 +88,18 @@ test("store enforces client, pending request, and approval code uniqueness limit
     resource: RESOURCE, expiresAt: new Date(s.clock.now().getTime() + MINUTE)
   }, { maxPending: 1 }), "limit");
   assert.equal(s.count("oauth_requests"), 1);
+  s.store.createRequest({
+    id: "r5", browserHash: "b", approvalHash: "approval-r5", clientId: "a", redirectUri: "x", codeChallenge: "c",
+    resource: RESOURCE, clientIp: "198.51.100.1", expiresAt: new Date(s.clock.now().getTime() + MINUTE)
+  }, { maxPendingPerIp: 1 });
+  assertStoreError(() => s.store.createRequest({
+    id: "r6", browserHash: "b", approvalHash: "approval-r6", clientId: "a", redirectUri: "x", codeChallenge: "c",
+    resource: RESOURCE, clientIp: "198.51.100.1", expiresAt: new Date(s.clock.now().getTime() + MINUTE)
+  }, { maxPendingPerIp: 1 }), "limit");
+  s.store.createRequest({
+    id: "r7", browserHash: "b", approvalHash: "approval-r7", clientId: "a", redirectUri: "x", codeChallenge: "c",
+    resource: RESOURCE, clientIp: "198.51.100.2", expiresAt: new Date(s.clock.now().getTime() + MINUTE)
+  }, { maxPendingPerIp: 1 });
   assert.throws(() => s.createRequest("r4", "missing-client"), /FOREIGN KEY/);
 });
 

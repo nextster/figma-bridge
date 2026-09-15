@@ -68,7 +68,7 @@ Setup installs a versioned runtime under `~/.figma-bridge` (`%USERPROFILE%\.figm
 
 The companion starts at sign-in (a LaunchAgent on macOS, a hidden Startup launcher on Windows) and MCP clients also start it on demand. Use `--no-codex`, `--no-claude`, or `--no-autostart` to skip parts, and `npm run uninstall` to remove autostart and the Claude integrations.
 
-In the plugin choose **This computer → Connect to this computer** and approve the dialog on your computer. Figma stores the resulting token in `clientStorage`. Manual token entry through `npm run bridge -- pair` remains available for troubleshooting. Open a new agent task or session after installing or changing MCP tools.
+In the plugin choose **This computer → Connect to this computer**, then type the 6-digit code that the Figma Bridge dialog shows on your computer. Figma stores the resulting token in `clientStorage`. Manual token entry through `npm run bridge -- pair` remains available for troubleshooting. Open a new agent task or session after installing or changing MCP tools.
 
 ## Relay mode
 
@@ -104,7 +104,7 @@ Local mode:
 
 - HTTP/WebSocket binds to `127.0.0.1` and `::1` only.
 - MCP adapters reach the companion through an owner-only Unix socket on macOS and Linux, or a named pipe with a random per-install name on Windows. Every control request and response is authenticated with an HMAC key from the owner-only state file, and requests are fresh and single-use.
-- The Figma plugin authenticates with a random owner-only token after an explicit approval dialog on the computer.
+- First pairing requires the 6-digit code from a dialog on the computer. Afterwards the plugin and companion prove knowledge of a random owner-only token to each other with HMAC before the plugin accepts commands, so a process squatting on the port learns nothing.
 - Tokens are never returned by MCP status or written to logs.
 
 Relay mode:

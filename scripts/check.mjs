@@ -37,6 +37,7 @@ for (const relative of [
 for (const relative of [
   "companion/src/server.mjs",
   "companion/src/hub.mjs",
+  "companion/src/plugin-auth.mjs",
   "plugins/figma-bridge/mcp/control.mjs",
   "plugins/figma-bridge/mcp/tools.mjs",
   "plugins/figma-bridge/mcp/autostart.mjs",

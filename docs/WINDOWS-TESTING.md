@@ -8,7 +8,7 @@ GitHub Actions does not run on Windows yet. Use this checklist on a Windows 10 o
 2. In PowerShell run `npm install`, `npm --prefix figma-plugin install`, and `npm run verify`.
 3. Run `npm run setup`. Expect `Configured MCP clients:` to list the installed clients and no errors about `.cmd` files.
 4. Check `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Figma Bridge companion.vbs` exists and that `npm run bridge -- status` prints `"platform": "win32"` and a `\\.\pipe\figma-bridge-…` control endpoint.
-5. In Figma Desktop import `figma-plugin\manifest.json`, run Figma Bridge, choose **This computer → Connect to this computer**, and approve the Figma Bridge popup. Expect `Connected to this computer`.
+5. In Figma Desktop import `figma-plugin\manifest.json`, run Figma Bridge, choose **This computer → Connect to this computer**, and type the 6-digit code from the Figma Bridge popup into the plugin. Expect `Connected to this computer`.
 6. In a new Claude Code or Codex session ask for `list_files`, `snapshot`, and `export_png`. Expect the open file and an image.
 7. Stop the companion with `npm run bridge -- stop`, then call `status` from the agent again. Expect the MCP server to start the companion within a few seconds.
 8. Sign out and back in. Expect the plugin to reconnect without a console window appearing.

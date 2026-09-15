@@ -322,7 +322,7 @@ test("registration validates metadata and returns secrets only for confidential 
   }
 });
 
-test("registration is rate limited per IP and globally", async t => {
+test("registration is rate limited per IP and globally without spending the shared budget on refused requests", async t => {
   const h = await createHarness(t);
   for (let index = 0; index < 20; index += 1) {
     assert.equal((await h.register({ redirect_uris: [TEST_REDIRECT] }, { "x-test-ip": "192.0.2.1" })).status, 201);
@@ -330,8 +330,8 @@ test("registration is rate limited per IP and globally", async t => {
   const limited = await h.register({ redirect_uris: [TEST_REDIRECT] }, { "x-test-ip": "192.0.2.1" });
   assert.equal(limited.status, 429);
   assert.equal(limited.body.error, "temporarily_unavailable");
-  // The request rejected per IP still counted against the global window.
-  for (let index = 21; index < 200; index += 1) {
+  // Requests refused for one address do not consume the global window.
+  for (let index = 21; index <= 200; index += 1) {
     assert.equal((await h.register({ redirect_uris: [TEST_REDIRECT] }, { "x-test-ip": `192.0.2.${index}` })).status, 201);
   }
   assert.equal((await h.register({ redirect_uris: [TEST_REDIRECT] }, { "x-test-ip": "198.51.100.1" })).status, 429);
@@ -458,7 +458,10 @@ test("pre-approval errors render an error page instead of redirecting", async t 
     assertErrorPage(response, html, status);
     assert.match(html, message);
   }
-  for (let index = 0; index < 20; index += 1) await h.openPage(h.authorizeUrl(clientId), { "x-test-ip": "192.0.2.50" });
+  for (let index = 0; index < 20; index += 1) {
+    if (index > 0 && index % 5 === 0) h.clock.advance(10 * MINUTE);
+    await h.openPage(h.authorizeUrl(clientId), { "x-test-ip": "192.0.2.50" });
+  }
   const limited = await fetch(h.authorizeUrl(clientId), { headers: { "x-test-ip": "192.0.2.50" }, redirect: "manual" });
   const html = await limited.text();
   assertErrorPage(limited, html, 429);
@@ -490,26 +493,31 @@ test("authorize rejects HEAD and limits requests per IP", async t => {
   const post = await fetch(h.authorizeUrl(clientId), { method: "POST" });
   assert.equal(post.status, 405);
   assert.equal(post.headers.get("allow"), "GET, HEAD");
-  for (let index = 0; index < 20; index += 1) await h.openPage(h.authorizeUrl(clientId));
+  for (let index = 0; index < 20; index += 1) {
+    if (index > 0 && index % 5 === 0) h.clock.advance(10 * MINUTE);
+    await h.openPage(h.authorizeUrl(clientId));
+  }
   const limited = await fetch(h.authorizeUrl(clientId));
   assert.equal(limited.status, 429);
   await limited.body.cancel();
-  h.clock.advance(HOUR);
+  h.clock.advance(HOUR - 30 * MINUTE);
   await h.openPage(h.authorizeUrl(clientId));
 });
 
-test("pending authorization requests are capped", async t => {
+test("pending authorization requests are capped per address", async t => {
   const h = await createHarness(t);
   const { client_id: clientId } = await h.registerPublicClient();
-  for (let index = 0; index < 20; index += 1) {
-    await h.openPage(h.authorizeUrl(clientId), { "x-test-ip": `203.0.113.${index}` });
+  for (let index = 0; index < 5; index += 1) {
+    await h.openPage(h.authorizeUrl(clientId), { "x-test-ip": "203.0.113.7" });
   }
-  const response = await fetch(h.authorizeUrl(clientId), { headers: { "x-test-ip": "203.0.113.99" } });
+  const response = await fetch(h.authorizeUrl(clientId), { headers: { "x-test-ip": "203.0.113.7" } });
   const html = await response.text();
   assertErrorPage(response, html, 429);
   assert.match(html, /unfinished connection requests/);
-  h.clock.advance(10 * MINUTE);
+  // Another address is unaffected, and the first recovers once its requests expire.
   await h.openPage(h.authorizeUrl(clientId), { "x-test-ip": "203.0.113.99" });
+  h.clock.advance(10 * MINUTE);
+  await h.openPage(h.authorizeUrl(clientId), { "x-test-ip": "203.0.113.7" });
 });
 
 test("authorize retries approval code collisions with fresh codes", async t => {
@@ -704,7 +712,7 @@ test("token endpoint parses only bounded form bodies and validates resource indi
   assert.equal(result.status, 200, JSON.stringify(result.body));
 });
 
-test("token and revocation endpoints are rate limited per IP", async t => {
+test("token and revocation endpoints are rate limited per IP only", async t => {
   const h = await createHarness(t);
   const headers = { "x-test-ip": "192.0.2.77" };
   for (let index = 0; index < 600; index += 1) {
@@ -715,6 +723,11 @@ test("token and revocation endpoints are rate limited per IP", async t => {
   assert.equal(limited.body.error, "temporarily_unavailable");
   assert.equal((await h.token({ client_id: "fbc_unknown" }, { headers, path: "/oauth/revoke" })).status, 401);
   assert.equal((await h.token({ client_id: "fbc_unknown" }, { headers: { "x-test-ip": "192.0.2.78" } })).status, 401);
+  // Thousands of junk token requests from a few addresses never lock out another client.
+  for (let address = 1; address <= 11; address += 1) {
+    for (let index = 0; index < 600; index += 1) await h.token({ client_id: "fbc_unknown" }, { headers: { "x-test-ip": `198.51.100.${address}` } });
+  }
+  assert.equal((await h.token({ client_id: "fbc_unknown" }, { headers: { "x-test-ip": "203.0.113.250" } })).status, 401);
 });
 
 test("approval page escapes hostile client names and sets strict headers", async t => {
@@ -814,7 +827,7 @@ test("lookups do not reveal expired codes and are rate limited per device and ac
   assert.throws(() => h.oauth.lookupApproval({ code: fresh.code, accountId: "", deviceId: DEVICE }), TypeError);
 });
 
-test("lookups are rate limited per IP and failed lookups globally", async t => {
+test("lookups are rate limited per IP, and failures elsewhere never lock out other accounts", async t => {
   const h = await createHarness(t);
   const { client_id: clientId } = await h.registerPublicClient();
   const page = await h.openPage(h.authorizeUrl(clientId));
@@ -824,11 +837,9 @@ test("lookups are rate limited per IP and failed lookups globally", async t => {
   lookupFails(() => h.lookup(page.code, { deviceId: "ip-device-fresh", ip: "198.51.100.9" }), "rate_limited");
   assert.equal(h.lookup(page.code, { deviceId: "ip-device-fresh", ip: "198.51.100.10" }).requestId, page.requestId);
 
-  for (let index = 60; index < 300; index += 1) {
+  for (let index = 60; index < 400; index += 1) {
     lookupFails(() => h.lookup("ZZZZ-ZZZZ", { accountId: `global-account-${index}`, deviceId: `global-device-${index}` }), "not_found");
   }
-  lookupFails(() => h.lookup(page.code, { accountId: "account-fresh", deviceId: "device-fresh" }), "rate_limited");
-  h.clock.advance(HOUR);
   const fresh = await h.openPage(h.authorizeUrl(clientId));
   assert.equal(h.lookup(fresh.code, { accountId: "account-fresh", deviceId: "device-fresh" }).requestId, fresh.requestId);
 });

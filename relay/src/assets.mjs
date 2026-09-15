@@ -3,7 +3,7 @@
 // expires quickly. Assets live in memory with global and per-account caps.
 
 import crypto from "node:crypto";
-import { safeStem } from "../../plugins/figma-bridge/mcp/tools.mjs";
+import { safeExtension, safeStem } from "../../plugins/figma-bridge/mcp/tools.mjs";
 
 const MIME_TYPES = new Map([
   ["png", "image/png"],
@@ -18,8 +18,9 @@ const MIME_TYPES = new Map([
 export function createAssetStore({
   issuer,
   ttlMs = 30 * 60_000,
-  maxBytes = 256 * 1024 * 1024,
-  maxBytesPerAccount = 96 * 1024 * 1024,
+  // The relay VM has 512 MiB; one full handoff is at most 64 MiB.
+  maxBytes = 128 * 1024 * 1024,
+  maxBytesPerAccount = 64 * 1024 * 1024,
   maxSessionsPerAccount = 20,
   now = () => Date.now()
 }) {
@@ -62,25 +63,28 @@ export function createAssetStore({
             throw new Error("Relay handoff storage limit reached");
           }
           const stem = safeStem(name);
-          const cleanExtension = String(extension).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "bin";
+          const cleanExtension = safeExtension(extension);
           let filename = `${stem}.${cleanExtension}`;
           for (let index = 2; session.files.has(filename); index += 1) filename = `${stem}-${index}.${cleanExtension}`;
           session.files.set(filename, { bytes, mimeType: MIME_TYPES.get(cleanExtension) || "application/octet-stream" });
           session.bytes += bytes.byteLength;
-          return `${base}/${encodeURIComponent(filename)}`;
+          return { filename, url: `${base}/${encodeURIComponent(filename)}` };
         }
 
         return {
           async save({ name, extension, bytes }) {
-            return { url: add(name, extension, bytes) };
+            return { url: add(name, extension, bytes).url };
           },
           describe() {
             return { downloadsExpireAt: new Date(session.expiresAt).toISOString() };
           },
           async saveManifest(handoff) {
-            const manifestUrl = `${base}/handoff.json`;
-            add("handoff", "json", Buffer.from(`${JSON.stringify({ ...handoff, manifestUrl }, null, 2)}\n`));
-            return { manifestUrl };
+            // Reserve the name first: an asset may already be called handoff.json.
+            const reserved = add("handoff", "json", Buffer.alloc(0));
+            const manifest = Buffer.from(`${JSON.stringify({ ...handoff, manifestUrl: reserved.url }, null, 2)}\n`);
+            session.files.set(reserved.filename, { bytes: manifest, mimeType: "application/json" });
+            session.bytes += manifest.byteLength;
+            return { manifestUrl: reserved.url };
           }
         };
       }

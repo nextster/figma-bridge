@@ -48,6 +48,7 @@ const SCHEMA = `
     client_id TEXT NOT NULL,
     client_name TEXT NOT NULL DEFAULT '',
     account_id TEXT NOT NULL,
+    approved_by_device TEXT NOT NULL DEFAULT '',
     resource TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     last_used_at INTEGER NOT NULL DEFAULT 0,
@@ -71,6 +72,8 @@ const GRANT_COLUMNS = "g.id, g.client_id, g.client_name, g.account_id, g.resourc
 
 export function migrateOAuth(db) {
   db.exec(SCHEMA);
+  const grantColumns = db.prepare("PRAGMA table_info(oauth_grants)").all().map(column => column.name);
+  if (!grantColumns.includes("approved_by_device")) db.exec("ALTER TABLE oauth_grants ADD COLUMN approved_by_device TEXT NOT NULL DEFAULT ''");
 }
 
 export function createOAuthStore(db, { now = () => new Date() } = {}) {
@@ -166,15 +169,22 @@ export function createOAuthStore(db, { now = () => new Date() } = {}) {
       };
     },
 
-    // maxPending bounds how many authorization requests can be outstanding.
+    // maxPending bounds how many authorization requests can be outstanding in
+    // total, and maxPendingPerIp how many one client address may hold, so a
+    // single address cannot exhaust the shared budget.
     // A duplicate request id or approval code hash throws code "conflict".
-    createRequest(request, { maxPending = 0 } = {}) {
+    createRequest(request, { maxPending = 0, maxPendingPerIp = 0 } = {}) {
       const seconds = toSeconds(now());
       transaction(() => {
         pruneTx(seconds);
         const { count } = sql(`SELECT COUNT(*) AS count FROM oauth_requests WHERE status = 'pending' AND expires_at > ?`)
           .get(seconds);
         if (maxPending > 0 && count >= maxPending) throw storeError("limit", "oauth pending request limit reached");
+        if (maxPendingPerIp > 0) {
+          const perIp = sql(`SELECT COUNT(*) AS count FROM oauth_requests WHERE status = 'pending' AND expires_at > ? AND client_ip = ?`)
+            .get(seconds, request.clientIp || "");
+          if (perIp.count >= maxPendingPerIp) throw storeError("limit", "oauth pending request limit reached for this address");
+        }
         try {
           sql(`INSERT INTO oauth_requests(id, browser_hash, approval_hash, client_id, redirect_uri, state, code_challenge,
             resource, client_ip, user_agent, status, created_at, expires_at)
@@ -250,9 +260,9 @@ export function createOAuthStore(db, { now = () => new Date() } = {}) {
           WHERE id = ? AND code_hash = ? AND status = 'approved' AND code_expires_at > ? AND account_id = ?`)
           .run(requestId, codeHash, seconds, grant.accountId || "");
         if (result.changes !== 1 || !grant.accountId) throw storeError("invalid_grant", "oauth grant is invalid");
-        sql(`INSERT INTO oauth_grants(id, client_id, client_name, account_id, resource, created_at, last_used_at)
-          VALUES(?, ?, ?, ?, ?, ?, ?)`)
-          .run(grant.id, grant.clientId, grant.clientName, grant.accountId, grant.resource, seconds, seconds);
+        sql(`INSERT INTO oauth_grants(id, client_id, client_name, account_id, approved_by_device, resource, created_at, last_used_at)
+          VALUES(?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(grant.id, grant.clientId, grant.clientName, grant.accountId, grant.approvedByDevice || "", grant.resource, seconds, seconds);
         insertTokensTx(grant.id, tokens);
       });
     },
@@ -356,6 +366,18 @@ export function createOAuthStore(db, { now = () => new Date() } = {}) {
     },
 
     // Revokes every grant of an account and returns how many were active.
+    // Revokes the grants a removed device approved, so its approvals do not
+    // outlive it.
+    revokeDeviceGrants(accountId, deviceId) {
+      if (!accountId || !deviceId) return 0;
+      const seconds = toSeconds(now());
+      return transaction(() => {
+        sql(`DELETE FROM oauth_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE account_id = ? AND approved_by_device = ?)`).run(accountId, deviceId);
+        return sql(`UPDATE oauth_grants SET revoked_at = ? WHERE account_id = ? AND approved_by_device = ? AND revoked_at = 0`)
+          .run(seconds, accountId, deviceId).changes;
+      });
+    },
+
     revokeAccountGrants(accountId) {
       if (!accountId) return 0;
       const seconds = toSeconds(now());

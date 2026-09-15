@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { stateDirectory } from "./control.mjs";
-import { safeStem } from "./tools.mjs";
+import { safeExtension, safeStem } from "./tools.mjs";
 
 /** Saves SwiftUI handoff assets as owner-only files on the local disk. */
 export function createLocalHandoffStore({ env = process.env } = {}) {
@@ -13,6 +13,7 @@ export function createLocalHandoffStore({ env = process.env } = {}) {
       return {
         async save({ name, extension, bytes }) {
           const destination = path.join(directory, await uniqueFilename(directory, name, extension, usedNames));
+          if (path.dirname(destination) !== directory) throw new Error("Handoff asset path escaped its directory");
           await fs.writeFile(destination, bytes, { mode: 0o600, flag: "wx" });
           return { path: destination };
         },
@@ -47,9 +48,10 @@ async function handoffDirectory(env, requested, fileName) {
 
 async function uniqueFilename(directory, name, extension, used) {
   const stem = safeStem(name);
-  let candidate = `${stem}.${extension}`;
+  const suffix = safeExtension(extension);
+  let candidate = `${stem}.${suffix}`;
   let index = 2;
-  while (used.has(candidate) || await exists(path.join(directory, candidate))) candidate = `${stem}-${index++}.${extension}`;
+  while (used.has(candidate) || await exists(path.join(directory, candidate))) candidate = `${stem}-${index++}.${suffix}`;
   used.add(candidate);
   return candidate;
 }

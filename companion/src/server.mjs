@@ -11,9 +11,11 @@ import {
   createControlServer,
   ensureState,
   isPipeEndpoint,
+  rotateControlId,
   stateDirectory
 } from "../../plugins/figma-bridge/mcp/control.mjs";
 import { cleanError, createFigmaHub } from "./hub.mjs";
+import { pairingCode, proof, proofMatches, randomNonce, validNonce } from "./plugin-auth.mjs";
 
 const VERSION = "0.2.0";
 const DEFAULT_PORT = 3847;
@@ -21,15 +23,21 @@ const DEFAULT_PORT = 3847;
 const MAX_WS_BYTES = 12 * 1024 * 1024;
 const STARTUP_CLIENT_WAIT_MS = 4000;
 const STARTUP_WINDOW_MS = 15_000;
+const AUTH_TIMEOUT_MS = 5000;
+const PAIRING_TTL_MS = 2 * 60_000;
+const PAIRING_MIN_INTERVAL_MS = 10_000;
+const PAIRING_WINDOW_MS = 10 * 60_000;
+const PAIRING_MAX_PER_WINDOW = 5;
 
 export async function startBridgeServer(options = {}) {
   const env = options.env || process.env;
   const platform = options.platform || process.platform;
   const logger = options.logger || console;
   const port = Number(options.port ?? env.FIGMA_BRIDGE_PORT ?? DEFAULT_PORT);
-  const approvePairing = options.approvePairing || createPairingApprover({ platform, env, logger });
+  const showPairingCode = options.showPairingCode || createPairingDialog({ platform, env, logger });
   const startedAt = Date.now();
   const hub = createFigmaHub();
+  const pairingStarts = [];
   let pairingInProgress = false;
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid FIGMA_BRIDGE_PORT");
@@ -40,7 +48,13 @@ export async function startBridgeServer(options = {}) {
   // touching state or the control endpoint so a second companion cannot
   // replace the endpoint of a running one.
   httpServers.push(await listenHttp("127.0.0.1"));
-  const ipv6 = await listenHttp("::1").catch(error => {
+  const ipv6 = await listenHttp("::1").catch(async error => {
+    // Another process on [::1] would receive plugin connections for
+    // "localhost", so only a missing IPv6 stack is tolerated.
+    if (error?.code === "EADDRINUSE") {
+      await Promise.all(httpServers.map(server => new Promise(resolve => server.close(() => resolve()))));
+      throw error;
+    }
     logger.info?.(`Figma Bridge IPv6 loopback unavailable: ${error.code || cleanError(error)}`);
     return null;
   });
@@ -51,7 +65,8 @@ export async function startBridgeServer(options = {}) {
   let controlServer;
   let ownedSocket = null;
   try {
-    state = ensureState(env, platform);
+    // A fresh pipe name per start keeps a name seen earlier from being squatted.
+    state = rotateControlId(ensureState(env, platform), env, platform);
     endpoint = controlEndpoint({ env, platform, state });
     controlServer = createControlServer({ secret: state.controlSecret, dispatch });
     if (!isPipeEndpoint(endpoint)) {
@@ -75,11 +90,15 @@ export async function startBridgeServer(options = {}) {
   logger.info?.(`Figma Bridge ${VERSION} listening on 127.0.0.1:${port}${ipv6 ? ` and [::1]:${port}` : ""}`);
 
   websocketServer.on("connection", (websocket, request) => {
+    const serverNonce = randomNonce();
     let authenticatedClientId = null;
-    let pairingPending = false;
-    const authenticationTimeout = setTimeout(() => websocket.close(4401, "authentication required"), 5000);
-
+    let pairing = null;
+    let authenticationTimeout = setTimeout(() => websocket.terminate(), AUTH_TIMEOUT_MS);
+    websocket.on("error", () => websocket.terminate());
     websocket.on("message", raw => void handleMessage(raw));
+    // The plugin proves it knows the token (or the pairing code) against this
+    // nonce before the companion reveals anything or sends commands.
+    websocket.send(JSON.stringify({ type: "hello", protocol: 2, nonce: serverNonce, version: VERSION }));
 
     async function handleMessage(raw) {
       let message;
@@ -89,51 +108,91 @@ export async function startBridgeServer(options = {}) {
         websocket.close(4400, "invalid JSON");
         return;
       }
-
-      if (!authenticatedClientId) {
-        if (message.type === "pair") {
-          if (pairingPending || pairingInProgress || !isAllowedPairingOrigin(request.headers.origin)) {
-            websocket.close(4403, "pairing unavailable");
-            return;
-          }
-          pairingPending = true;
-          pairingInProgress = true;
-          clearTimeout(authenticationTimeout);
-          let approved = false;
-          try {
-            approved = await approvePairing({ origin: request.headers.origin || "", client: message.client || {} });
-          } catch (error) {
-            logger.error?.(`Figma Bridge pairing approval failed: ${cleanError(error)}`);
-          } finally {
-            pairingInProgress = false;
-          }
-          if (!approved || websocket.readyState !== websocket.OPEN) {
-            websocket.close(4403, "pairing denied");
-            return;
-          }
-          authenticatedClientId = hub.register(websocket, message.client);
-          websocket.send(JSON.stringify({ type: "pair.ok", token: state.token }));
-          websocket.send(JSON.stringify({ type: "auth.ok", clientId: authenticatedClientId, version: VERSION }));
-          return;
-        }
-        if (message.type !== "auth" || !constantTimeEqual(message.token, state.token)) {
-          websocket.close(4403, "authentication failed");
-          return;
-        }
-        clearTimeout(authenticationTimeout);
-        authenticatedClientId = hub.register(websocket, message.client);
-        websocket.send(JSON.stringify({ type: "auth.ok", clientId: authenticatedClientId, version: VERSION }));
+      if (authenticatedClientId) {
+        hub.handleMessage(authenticatedClientId, websocket, message);
         return;
       }
 
-      hub.handleMessage(authenticatedClientId, websocket, message);
+      if (message.type === "auth") {
+        if (!validNonce(message.nonce) || !proofMatches(proof(state.token, "auth/client", serverNonce, message.nonce), message.proof)) {
+          websocket.close(4403, "authentication failed");
+          return;
+        }
+        authenticate(message.client);
+        send({ type: "auth.ok", clientId: authenticatedClientId, version: VERSION, proof: proof(state.token, "auth/server", serverNonce, message.nonce) });
+        return;
+      }
+
+      if (message.type === "pair") {
+        if (pairing || !isAllowedPairingOrigin(request.headers.origin) || !startPairing()) {
+          websocket.close(4403, "pairing unavailable");
+          return;
+        }
+        clearTimeout(authenticationTimeout);
+        authenticationTimeout = setTimeout(() => websocket.close(4408, "pairing expired"), PAIRING_TTL_MS);
+        pairing = { code: pairingCode(), dialog: null };
+        try {
+          pairing.dialog = showPairingCode({ code: pairing.code, origin: request.headers.origin || "" });
+        } catch (error) {
+          logger.error?.(`Figma Bridge pairing dialog failed: ${cleanError(error)}`);
+          websocket.close(4403, "pairing unavailable");
+          return;
+        }
+        pairing.dialog?.cancelled?.then(cancelled => {
+          if (cancelled && !authenticatedClientId) websocket.close(4403, "pairing cancelled");
+        }, error => logger.error?.(`Figma Bridge pairing dialog failed: ${cleanError(error)}`));
+        send({ type: "pair.code", expiresInMs: PAIRING_TTL_MS });
+        return;
+      }
+
+      if (message.type === "pair.proof" && pairing?.code) {
+        const { code } = pairing;
+        pairing.code = null;
+        // One guess per dialog: a wrong code ends the pairing attempt.
+        if (!validNonce(message.nonce) || !proofMatches(proof(code, "pair/client", serverNonce, message.nonce), message.proof)) {
+          websocket.close(4403, "pairing failed");
+          return;
+        }
+        pairing.dialog?.dismiss?.();
+        authenticate(message.client);
+        send({ type: "pair.ok", token: state.token, proof: proof(code, "pair/server", serverNonce, message.nonce, state.token) });
+        send({ type: "auth.ok", clientId: authenticatedClientId, version: VERSION });
+        return;
+      }
+
+      websocket.close(4401, "authentication required");
+    }
+
+    function authenticate(client) {
+      clearTimeout(authenticationTimeout);
+      authenticatedClientId = hub.register(websocket, client);
+    }
+
+    function send(value) {
+      if (websocket.readyState === websocket.OPEN) websocket.send(JSON.stringify(value));
     }
 
     websocket.on("close", () => {
       clearTimeout(authenticationTimeout);
+      if (pairing) {
+        pairing.dialog?.dismiss?.();
+        pairingInProgress = false;
+      }
       if (authenticatedClientId) hub.unregister(authenticatedClientId, websocket);
     });
   });
+
+  // Any local web page can open a WebSocket with Origin "null", so pairing
+  // dialogs are serialized and rate limited.
+  function startPairing() {
+    const now = Date.now();
+    while (pairingStarts.length && now - pairingStarts[0] > PAIRING_WINDOW_MS) pairingStarts.shift();
+    if (pairingInProgress || pairingStarts.length >= PAIRING_MAX_PER_WINDOW) return false;
+    if (pairingStarts.length && now - pairingStarts.at(-1) < PAIRING_MIN_INTERVAL_MS) return false;
+    pairingStarts.push(now);
+    pairingInProgress = true;
+    return true;
+  }
 
   async function dispatch(method, params) {
     if (method === "bridge.status") {
@@ -215,59 +274,53 @@ function isAllowedPairingOrigin(origin) {
   return origin === "null" || origin === "https://www.figma.com";
 }
 
-const PAIRING_PROMPT = "Figma Bridge wants to connect the open Figma plugin to your AI app. Approve only if you just clicked Connect in Figma.";
-
-/** Returns the platform's native approval dialog command, or null when none exists. */
-export function pairingDialogCommand(platform = process.platform, env = process.env) {
+/** Returns the platform's native pairing-code dialog, or null when none exists. */
+export function pairingDialogCommand(platform = process.platform, env = process.env, code = "000000") {
+  if (!/^\d{6}$/.test(code)) throw new Error("pairing code must be six digits");
+  const spaced = `${code.slice(0, 3)} ${code.slice(3)}`;
+  const prompt = `Figma Bridge pairing code: ${spaced}. Enter it in the Figma Bridge plugin. If you did not just click Connect in Figma, choose Cancel.`;
   if (platform === "darwin") {
-    const script = `display dialog "${PAIRING_PROMPT}" with title "Figma Bridge" buttons {"Cancel", "Connect"} default button "Connect" cancel button "Cancel" with icon note giving up after 30`;
+    const script = `display dialog "${prompt}" with title "Figma Bridge" buttons {"Cancel", "OK"} default button "OK" cancel button "Cancel" with icon note giving up after 120`;
     return {
       command: "/usr/bin/osascript",
       args: ["-e", script],
-      approved: (code, output) => code === 0 && output.includes("button returned:Connect") && !output.includes("gave up:true")
+      cancelled: (exitCode, output) => exitCode !== 0 && !output.includes("gave up:true")
     };
   }
   if (platform === "win32") {
-    // WScript.Shell.Popup: 1 = OK/Cancel, 32 = question icon, 4096 = system modal; 30 s timeout returns -1.
+    // WScript.Shell.Popup: 1 = OK/Cancel, 64 = information icon, 4096 = system modal; Cancel returns 2.
     const script = [
       "$shell = New-Object -ComObject WScript.Shell",
-      `$result = $shell.Popup('${PAIRING_PROMPT.replaceAll("'", "''")}', 30, 'Figma Bridge', 4129)`,
+      `$result = $shell.Popup('${prompt}', 120, 'Figma Bridge', 4161)`,
       "[Console]::Out.Write([string]$result)"
     ].join("\n");
     const systemRoot = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
     return {
       command: path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-      approved: (code, output) => code === 0 && output.trim() === "1"
+      cancelled: (exitCode, output) => exitCode === 0 && output.trim() === "2"
     };
   }
   return null;
 }
 
-function createPairingApprover({ platform, env, logger }) {
-  const dialog = pairingDialogCommand(platform, env);
-  if (!dialog) {
-    return async () => {
-      logger.error?.("Automatic pairing needs a desktop approval dialog, which is unavailable on this platform. Run `npm run bridge -- pair` and paste the token into the plugin.");
-      return false;
-    };
-  }
-  return () => new Promise((resolve, reject) => {
-    const child = spawn(dialog.command, dialog.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+function createPairingDialog({ platform, env, logger }) {
+  return ({ code }) => {
+    const dialog = pairingDialogCommand(platform, env, code);
+    if (!dialog) {
+      logger.error?.("Automatic pairing needs a desktop dialog, which is unavailable on this platform. Run `npm run bridge -- pair` and paste the token into the plugin.");
+      throw new Error("no pairing dialog on this platform");
+    }
+    const child = spawn(dialog.command, dialog.args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     let output = "";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", chunk => { output = (output + chunk).slice(-4096); });
-    child.stderr.resume();
-    child.once("error", reject);
-    child.once("close", code => resolve(dialog.approved(code, output)));
-  });
-}
-
-function constantTimeEqual(first, second) {
-  if (typeof first !== "string" || typeof second !== "string") return false;
-  const a = Buffer.from(first);
-  const b = Buffer.from(second);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+    const cancelled = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (exitCode, signal) => resolve(signal ? false : dialog.cancelled(exitCode, output)));
+    });
+    return { cancelled, dismiss: () => { if (child.exitCode === null) child.kill(); } };
+  };
 }
 
 export function isMainModule(moduleUrl, entry = process.argv[1]) {

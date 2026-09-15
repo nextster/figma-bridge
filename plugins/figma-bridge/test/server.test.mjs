@@ -25,7 +25,7 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
       if (params.command === "handoff.prepareSwiftUI") {
         return { file: { name: "Test" }, assets: [{ key: "screen:1:2", kind: "screen-png" }], _assetRequests: [{ key: "screen:1:2", kind: "screen-png", nodeId: "1:2", name: "Screen" }] };
       }
-      if (params.command === "handoff.exportAsset") return { data: "aGVsbG8=", mimeType: "image/png", extension: "png", bytes: 5 };
+      if (params.command === "handoff.exportAsset") return { data: "aGVsbG8=", mimeType: "image/png", extension: "/../../../escape.png", bytes: 5 };
       if (params.command === "nodes.exportPng") return { node: { id: "1:2", type: "FRAME" }, mimeType: "image/png", data: "aGVsbG8=" };
       return { forwarded: params };
     }
@@ -118,7 +118,8 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   assert.deepEqual(requests.find(request => request.params?.command === "shaders.list").params.arguments, { type: "fill" });
   assert.deepEqual(requests.find(request => request.params?.command === "shaders.apply").params.arguments, { nodeIds: ["1:2"], shaderId: "shader:glass", properties: { Frost: 0.4 } });
   const handoff = JSON.parse(byId(17).result.content[0].text);
-  assert.equal(handoff.assets[0].export.path, path.join(directory, "Screen.png"));
+  // A traversal attempt in the plugin-supplied extension stays inside the handoff directory.
+  assert.equal(handoff.assets[0].export.path, path.join(directory, "Screen.escapepn"));
   assert.equal(handoff.manifestPath, path.join(directory, "handoff.json"));
 });
 

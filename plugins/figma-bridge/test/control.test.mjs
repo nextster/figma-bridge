@@ -21,7 +21,7 @@ test("control requests and responses are authenticated, fresh, and single-use", 
   });
 
   assert.deepEqual(await requestControl("bridge.status", { a: 1 }, { endpoint, secret }), { ok: "bridge.status" });
-  await assert.rejects(requestControl("bridge.status", {}, { endpoint, secret: crypto.randomBytes(32).toString("base64url") }), /control authentication failed/);
+  await assert.rejects(requestControl("bridge.status", {}, { endpoint, secret: crypto.randomBytes(32).toString("base64url") }), /control response failed authentication/);
 
   const nonce = crypto.randomBytes(18).toString("base64url");
   const ts = Date.now();

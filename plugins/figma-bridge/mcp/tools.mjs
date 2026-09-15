@@ -562,6 +562,12 @@ export function safeStem(value) {
   return stem || "asset";
 }
 
+// Asset names and extensions come from the plugin connection, so they may only
+// select a file inside the handoff directory.
+export function safeExtension(value) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "bin";
+}
+
 export function cleanMessage(cause) {
   const message = cause instanceof Error ? cause.message : String(cause);
   return message.replace(/[\r\n]+/g, " ").slice(0, 1000);

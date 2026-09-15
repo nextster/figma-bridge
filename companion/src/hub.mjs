@@ -4,8 +4,12 @@
 import crypto from "node:crypto";
 
 export const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+// Bounds memory when a plugin stops reading: commands queue on the socket and
+// in the pending map until they time out.
+export const DEFAULT_MAX_PENDING = 64;
+export const DEFAULT_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 
-export function createFigmaHub({ rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS } = {}) {
+export function createFigmaHub({ rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS, maxPending = DEFAULT_MAX_PENDING, maxBufferedBytes = DEFAULT_MAX_BUFFERED_BYTES } = {}) {
   const clients = new Map();
   const pending = new Map();
   const waiters = new Set();
@@ -61,6 +65,8 @@ export function createFigmaHub({ rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS } = {}) {
     if (!client || client.websocket.readyState !== client.websocket.OPEN) {
       throw new Error(`Figma client is not connected: ${targetId}`);
     }
+    if (pending.size >= maxPending) throw new Error("Too many Figma commands are waiting; try again when earlier commands finish");
+    if ((client.websocket.bufferedAmount || 0) > maxBufferedBytes) throw new Error("The Figma plugin is not accepting commands right now; try again shortly");
     const id = `${requestPrefix}-${nextRequestId++}`;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {

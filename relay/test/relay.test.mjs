@@ -43,8 +43,14 @@ test("plugins register with invites, link devices, and reconnect with device cre
   stolen.send({ type: "hello", device: { id: registered.device.id, secret: `${registered.device.secret}x` } });
   assert.equal((await stolen.closed()).code, 4403);
 
-  assert.deepEqual(await again.call("devices.revoke", { deviceId: linked.device.id }), { revoked: true });
+  const pendingLink = await second.call("devices.link");
+  assert.deepEqual(await again.call("devices.revoke", { deviceId: linked.device.id }), { revoked: true, revokedGrants: 1 });
+  assert.deepEqual(relay.oauthCalls.at(-1), { method: "revokeDeviceGrants", args: { accountId: registered.accountId, deviceId: linked.device.id } });
   assert.equal((await second.closed()).code, 4403);
+  // Link codes minted by a removed device cannot bring it back.
+  const rejoin = await connectPlugin(relay);
+  rejoin.send({ type: "register", code: pendingLink.code, deviceName: "Figma on macOS" });
+  assert.equal((await rejoin.next("register.error")).error, "invalid_code");
   const revoked = await connectPlugin(relay);
   revoked.send({ type: "hello", device: linked.device });
   assert.equal((await revoked.closed()).code, 4403);
@@ -131,6 +137,42 @@ test("plugin account calls are scoped to the authenticated device", async t => {
   assert.match(String(stranger.message), /403/);
 });
 
+test("anonymous plugin sockets cannot send large frames or pile up", async t => {
+  const relay = await startRelay(t);
+  const big = await connectPlugin(relay);
+  big.send({ type: "register", code: "x".repeat(100 * 1024) });
+  assert.equal((await big.closed()).code, 1009);
+
+  const held = [];
+  for (let index = 0; index < 8; index += 1) held.push(await connectPlugin(relay));
+  await assert.rejects(connectPlugin(relay), /unexpected 403/);
+  held[0].close();
+  await held[0].closed();
+  const replacement = await connectPlugin(relay);
+  replacement.close();
+
+  // Authenticated devices may still send full-size exports.
+  const plugin = await registeredPlugin(relay, "Large export");
+  relay.tokens.set("token-large", { grantId: "g-large", accountId: plugin.accountId, clientId: "c", clientName: "Claude" });
+  const payload = "A".repeat(10 * 1024 * 1024);
+  plugin.serve(() => ({ node: { id: "1:2" }, mimeType: "image/png", data: payload }));
+  const exported = await callTool(relay, "token-large", "export_png", { nodeId: "1:2" });
+  assert.equal(exported.content[1].data.length, payload.length);
+});
+
+test("a handoff asset named handoff.json cannot replace the manifest", async t => {
+  const relay = await startRelay(t);
+  const plugin = await registeredPlugin(relay, "Shadow");
+  relay.tokens.set("token-shadow", { grantId: "g-shadow", accountId: plugin.accountId, clientId: "c", clientName: "Claude" });
+  plugin.serve((command) => command === "handoff.prepareSwiftUI"
+    ? { file: { name: "Shadow" }, assets: [{ key: "a" }], _assetRequests: [{ key: "a", kind: "svg", nodeId: "1:2", name: "handoff" }] }
+    : { data: Buffer.from("{\"forged\":true}").toString("base64"), mimeType: "application/json", extension: "json" });
+  const handoff = JSON.parse((await callTool(relay, "token-shadow", "prepare_swiftui_handoff", { screenIds: ["1:2"] })).content[0].text);
+  assert.notEqual(handoff.assets[0].export.url, handoff.manifestUrl);
+  const manifest = await rawRequest(relay, { method: "GET", path: new URL(handoff.manifestUrl).pathname });
+  assert.equal(JSON.parse(manifest.text).manifestUrl, handoff.manifestUrl);
+});
+
 async function startRelay(t) {
   const db = new DatabaseSync(":memory:");
   migrateAccounts(db);
@@ -149,7 +191,8 @@ async function startRelay(t) {
     async lookupApproval(args) { oauthCalls.push({ method: "lookupApproval", args }); return { requestId: "r1", clientName: "Claude Code" }; },
     async decideApproval(args) { oauthCalls.push({ method: "decideApproval", args }); return { status: args.approve ? "approved" : "denied" }; },
     async listGrants() { return []; },
-    async revokeGrant(args) { oauthCalls.push({ method: "revokeGrant", args }); return true; }
+    async revokeGrant(args) { oauthCalls.push({ method: "revokeGrant", args }); return true; },
+    revokeDeviceGrants(args) { oauthCalls.push({ method: "revokeDeviceGrants", args }); return 1; }
   };
   const limiter = createRateLimiter({ now });
   const gateway = createPluginGateway({ accounts, oauth, limiter, clientIp: () => "127.0.0.1", logger: { error() {} }, version: "test" });

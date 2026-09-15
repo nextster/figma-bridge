@@ -22,16 +22,15 @@ const REQUEST_TTL = 10 * MINUTE;
 const CODE_TTL = 2 * MINUTE;
 
 const MAX_CLIENTS = 500;
-const MAX_PENDING_REQUESTS = 20;
+const MAX_PENDING_REQUESTS = 200;
+const MAX_PENDING_PER_IP = 5;
 const PER_IP_PER_HOUR = 20;
 const GLOBAL_PER_HOUR = 200;
 const TOKEN_PER_IP_PER_HOUR = 600;
-const TOKEN_GLOBAL_PER_HOUR = 6000;
 const LOOKUP_WINDOW = 10 * MINUTE;
 const LOOKUPS_PER_DEVICE = 10;
 const LOOKUPS_PER_ACCOUNT = 20;
 const LOOKUPS_PER_IP = 60;
-const FAILED_LOOKUPS_PER_HOUR = 300;
 const MAX_LIMITER_KEYS = 10000;
 
 const REFRESH_REUSE_GRACE = 30 * SECOND;
@@ -276,7 +275,7 @@ export function createOAuthServer({
       request.id = randomToken(16);
       request.approvalHash = hashSecret(approvalCode);
       try {
-        store.createRequest(request, { maxPending: MAX_PENDING_REQUESTS });
+        store.createRequest(request, { maxPending: MAX_PENDING_REQUESTS, maxPendingPerIp: MAX_PENDING_PER_IP });
         break;
       } catch (error) {
         if (error?.code === "conflict" && attempt < APPROVAL_CODE_ATTEMPTS) continue;
@@ -353,7 +352,7 @@ export function createOAuthServer({
 
   async function token(req, res) {
     setCors(res);
-    if (!allowRequest("token", req, TOKEN_PER_IP_PER_HOUR, TOKEN_GLOBAL_PER_HOUR)) {
+    if (!allowRequest("token", req, TOKEN_PER_IP_PER_HOUR)) {
       writeOAuthError(res, 429, "temporarily_unavailable", "too many token requests; try again later");
       return;
     }
@@ -413,6 +412,7 @@ export function createOAuthServer({
       clientId: client.clientId,
       clientName: displayClientName(client.name),
       accountId: request.accountId,
+      approvedByDevice: request.decidedByDevice,
       resource: request.resource
     };
     const pair = newTokenPair(time);
@@ -465,7 +465,7 @@ export function createOAuthServer({
 
   async function revoke(req, res) {
     setCors(res);
-    if (!allowRequest("revoke", req, TOKEN_PER_IP_PER_HOUR, TOKEN_GLOBAL_PER_HOUR)) {
+    if (!allowRequest("revoke", req, TOKEN_PER_IP_PER_HOUR)) {
       writeOAuthError(res, 429, "temporarily_unavailable", "too many revocation requests; try again later");
       return;
     }
@@ -568,8 +568,13 @@ export function createOAuthServer({
     return appendQuery(redirectUri, state, { error: code, error_description: description, iss: issuer });
   }
 
+  // The per-address window is checked first so requests refused for one
+  // address never consume the shared budget. Token and revocation requests
+  // have no shared budget, like the Go reference, so one address cannot lock
+  // every client out of refreshing.
   function allowRequest(kind, req, perIp, global) {
-    return limiter.allow(kind, global, HOUR) && limiter.allow(`${kind}:${requestIp(req)}`, perIp, HOUR);
+    if (!limiter.allow(`${kind}:${requestIp(req)}`, perIp, HOUR)) return false;
+    return global === undefined || limiter.allow(kind, global, HOUR);
   }
 
   function requestIp(req) {
@@ -611,15 +616,13 @@ export function createOAuthServer({
     requireIdentity(accountId, deviceId);
     const allowed = limiter.allow(`lookup:device:${deviceId}`, LOOKUPS_PER_DEVICE, LOOKUP_WINDOW)
       && limiter.allow(`lookup:account:${accountId}`, LOOKUPS_PER_ACCOUNT, LOOKUP_WINDOW)
-      && (!ip || limiter.allow(`lookup:ip:${ip}`, LOOKUPS_PER_IP, LOOKUP_WINDOW))
-      && !limiter.exceeded("lookup:failed", FAILED_LOOKUPS_PER_HOUR);
+      && (!ip || limiter.allow(`lookup:ip:${ip}`, LOOKUPS_PER_IP, LOOKUP_WINDOW));
     if (!allowed) throw approvalError("rate_limited", "too many approval code lookups; try again later");
     const normalized = normalizeApprovalCode(code);
     const found = normalized
       ? store.lookupRequest({ approvalHash: hashSecret(normalized), accountId, deviceId })
       : null;
     if (!found) {
-      limiter.hit("lookup:failed", HOUR);
       throw approvalError("not_found", "approval code is invalid or expired");
     }
     return {
@@ -663,6 +666,11 @@ export function createOAuthServer({
     return store.revokeGrant(accountId, grantId) !== null;
   }
 
+  function revokeDeviceGrants({ accountId, deviceId } = {}) {
+    if (!isNonEmptyString(accountId) || !isNonEmptyString(deviceId)) return 0;
+    return store.revokeDeviceGrants(accountId, deviceId);
+  }
+
   function revokeAccountGrants(accountId) {
     if (!isNonEmptyString(accountId)) return 0;
     return store.revokeAccountGrants(accountId);
@@ -678,6 +686,7 @@ export function createOAuthServer({
     decideApproval,
     listGrants,
     revokeGrant,
+    revokeDeviceGrants,
     revokeAccountGrants
   };
 }
@@ -1075,17 +1084,6 @@ function createLimiter(now) {
       entry.count += 1;
       windows.set(key, entry);
       return true;
-    },
-    exceeded(key, limit) {
-      const entry = active(key, now().getTime());
-      return entry ? entry.count >= limit : false;
-    },
-    hit(key, window) {
-      const time = now().getTime();
-      sweep(time);
-      const entry = active(key, time) ?? { start: time, count: 0, window };
-      entry.count += 1;
-      windows.set(key, entry);
     }
   };
 }

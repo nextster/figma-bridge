@@ -10,7 +10,10 @@ const relayUrl = process.env.FIGMA_BRIDGE_RELAY_URL || DEFAULT_RELAY_URL;
 if (!/^wss:\/\/[a-z0-9.-]+(:\d+)?\/plugin$|^ws:\/\/localhost:\d+\/plugin$/.test(relayUrl)) {
   throw new Error("FIGMA_BRIDGE_RELAY_URL must be wss://<host>/plugin, or ws://localhost:<port>/plugin for development");
 }
-const html = (await fs.readFile(path.join(root, "src/ui.html"), "utf8")).replace("__FIGMA_BRIDGE_RELAY_URL__", relayUrl);
+const auth = await fs.readFile(path.join(root, "src/bridge-auth.js"), "utf8");
+const html = (await fs.readFile(path.join(root, "src/ui.html"), "utf8"))
+  .replace("__FIGMA_BRIDGE_RELAY_URL__", relayUrl)
+  .replace("/*__FIGMA_BRIDGE_AUTH__*/", () => `\n${auth}`);
 
 await fs.mkdir(dist, { recursive: true });
 await build({

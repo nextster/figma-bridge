@@ -90,6 +90,17 @@ export function ensureState(env = process.env, platform = process.platform) {
   return state;
 }
 
+/** Assigns a new random pipe id; called by the companion that owns the port. */
+export function rotateControlId(state, env = process.env, platform = process.platform) {
+  const next = { ...state, controlId: crypto.randomBytes(16).toString("hex") };
+  const directory = stateDirectory(env);
+  const temporary = temporaryPath(directory);
+  fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  fs.renameSync(temporary, stateFilePath(env));
+  if (platform !== "win32") fs.chmodSync(stateFilePath(env), 0o600);
+  return next;
+}
+
 export function controlEndpoint({ env = process.env, platform = process.platform, state } = {}) {
   const override = env.FIGMA_BRIDGE_SOCKET;
   if (override) return override.startsWith(PIPE_PREFIX) ? override : path.resolve(override);
@@ -230,7 +241,7 @@ export function requestControl(method, params = {}, options = {}) {
       try {
         const envelope = JSON.parse(buffer.slice(0, newline));
         if (typeof envelope.body !== "string" || !macMatches(envelope.mac, mac(secret, "res", nonce, envelope.body))) {
-          finish(new Error(envelope.error ? `Figma Bridge control channel: ${envelope.error}` : "Figma Bridge control response failed authentication"));
+          finish(new Error("Figma Bridge control response failed authentication"));
           return;
         }
         const response = JSON.parse(envelope.body);

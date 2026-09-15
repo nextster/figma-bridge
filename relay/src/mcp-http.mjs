@@ -5,9 +5,13 @@
 import { SERVER_VERSION, createMcpHandler, createToolExecutor } from "../../plugins/figma-bridge/mcp/tools.mjs";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+// Each in-flight call holds its body and the forwarded command in memory until
+// the plugin answers, so concurrency is bounded per account.
+const MAX_IN_FLIGHT_PER_ACCOUNT = 8;
 
 export function createMcpEndpoint({ oauth, gateway, assets, limiter, allowedOrigins = [], logger = console }) {
   const origins = new Set(allowedOrigins);
+  const inFlight = new Map();
 
   return async function handle(request, response) {
     const origin = request.headers.origin;
@@ -26,18 +30,37 @@ export function createMcpEndpoint({ oauth, gateway, assets, limiter, allowedOrig
       response.writeHead(401, {
         "content-type": "application/json",
         "cache-control": "no-store",
+        connection: "close",
         "www-authenticate": `Bearer resource_metadata="${oauth.resourceMetadataUrl}", error="invalid_token"`
       });
       response.end(`${JSON.stringify({ error: "invalid_token", error_description: "A valid Figma Bridge access token is required" })}\n`);
       return;
     }
 
-    if (limiter && !limiter.allow(`mcp:${grant.grantId}`, 600, 60_000)) {
-      response.writeHead(429, { "content-type": "application/json", "cache-control": "no-store", "retry-after": "60" });
+    // Users can create several grants, so the account limit is the real bound.
+    if (limiter && (!limiter.allow(`mcp:${grant.grantId}`, 600, 60_000) || !limiter.allow(`mcp-account:${grant.accountId}`, 900, 60_000))) {
+      response.writeHead(429, { "content-type": "application/json", "cache-control": "no-store", "retry-after": "60", connection: "close" });
       response.end(`${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: "Too many requests" } })}\n`);
       return;
     }
 
+    const active = inFlight.get(grant.accountId) || 0;
+    if (active >= MAX_IN_FLIGHT_PER_ACCOUNT) {
+      response.writeHead(429, { "content-type": "application/json", "cache-control": "no-store", "retry-after": "5", connection: "close" });
+      response.end(`${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: "Too many concurrent requests" } })}\n`);
+      return;
+    }
+    inFlight.set(grant.accountId, active + 1);
+    try {
+      await handleAuthorized(request, response, grant);
+    } finally {
+      const remaining = (inFlight.get(grant.accountId) || 1) - 1;
+      if (remaining > 0) inFlight.set(grant.accountId, remaining);
+      else inFlight.delete(grant.accountId);
+    }
+  };
+
+  async function handleAuthorized(request, response, grant) {
     let payload;
     try {
       payload = JSON.parse(await readBody(request, MAX_BODY_BYTES));
@@ -66,7 +89,7 @@ export function createMcpEndpoint({ oauth, gateway, assets, limiter, allowedOrig
       return;
     }
     sendJson(response, 200, Array.isArray(payload) ? responses : responses[0]);
-  };
+  }
 
   async function authenticate(request) {
     const header = request.headers.authorization;

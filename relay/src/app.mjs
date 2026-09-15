@@ -83,7 +83,8 @@ export function createRelay({ config, db, logger = console, now = () => Date.now
         response.destroy();
       }
     } finally {
-      if (config.logRequests) logger.info?.(`${request.method} ${url.pathname} ${response.statusCode} ${Date.now() - started}ms`);
+      // Asset paths are capability URLs, so their tokens never reach logs.
+      if (config.logRequests) logger.info?.(`${request.method} ${url.pathname.startsWith("/assets/") ? "/assets/…" : url.pathname} ${response.statusCode} ${Date.now() - started}ms`);
     }
   });
 

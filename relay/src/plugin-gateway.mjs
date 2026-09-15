@@ -10,15 +10,21 @@ import { cleanError, createFigmaHub } from "../../companion/src/hub.mjs";
 
 const PROTOCOL = 1;
 // Plugin exports are capped at 8 MiB raw, which is about 10.7 MiB as base64 JSON.
+// Until a socket authenticates it may only send small messages, so anonymous
+// peers cannot make the relay buffer large frames.
 const MAX_MESSAGE_BYTES = 12 * 1024 * 1024;
+const MAX_UNAUTHENTICATED_MESSAGE_BYTES = 64 * 1024;
+const MAX_UNAUTHENTICATED_SOCKETS = 256;
+const MAX_UNAUTHENTICATED_SOCKETS_PER_ADDRESS = 8;
 const AUTH_TIMEOUT_MS = 10_000;
 const HEARTBEAT_MS = 25_000;
 const ALLOWED_ORIGINS = new Set(["null", "https://www.figma.com"]);
 const PUBLIC_ERRORS = new Set(["invalid_code", "rate_limited", "device_limit", "not_found", "invalid_request"]);
 
 export function createPluginGateway({ accounts, oauth, signup = "invite", limiter, clientIp, logger = console, version }) {
-  const websocketServer = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+  const websocketServer = new WebSocketServer({ noServer: true, maxPayload: MAX_UNAUTHENTICATED_MESSAGE_BYTES });
   const hubs = new Map();
+  const unauthenticated = new Map();
 
   const heartbeat = setInterval(() => {
     for (const websocket of websocketServer.clients) {
@@ -35,7 +41,13 @@ export function createPluginGateway({ accounts, oauth, signup = "invite", limite
   function handleUpgrade(request, socket, head) {
     const origin = request.headers.origin;
     const ip = clientIp(request);
-    if ((origin !== undefined && !ALLOWED_ORIGINS.has(origin)) || !limiter.allow(`plugin-connect:${ip}`, 60, 60_000)) {
+    const pendingForAddress = unauthenticated.get(ip) || 0;
+    let pendingTotal = 0;
+    for (const count of unauthenticated.values()) pendingTotal += count;
+    if ((origin !== undefined && !ALLOWED_ORIGINS.has(origin))
+      || pendingForAddress >= MAX_UNAUTHENTICATED_SOCKETS_PER_ADDRESS
+      || pendingTotal >= MAX_UNAUTHENTICATED_SOCKETS
+      || !limiter.allow(`plugin-connect:${ip}`, 60, 60_000)) {
       socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
       socket.destroy();
       return;
@@ -46,13 +58,19 @@ export function createPluginGateway({ accounts, oauth, signup = "invite", limite
   function onConnection(websocket, ip) {
     let device = null;
     let clientId = null;
+    let counted = true;
+    unauthenticated.set(ip, (unauthenticated.get(ip) || 0) + 1);
     websocket.isAlive = true;
     websocket.on("pong", () => { websocket.isAlive = true; });
-    const authTimeout = setTimeout(() => websocket.close(4401, "authentication required"), AUTH_TIMEOUT_MS);
+    // Protocol violations such as oversized frames surface as errors; without a
+    // listener they would crash the relay.
+    websocket.on("error", () => websocket.terminate());
+    const authTimeout = setTimeout(() => websocket.terminate(), AUTH_TIMEOUT_MS);
 
     websocket.on("message", raw => void onMessage(raw));
     websocket.on("close", () => {
       clearTimeout(authTimeout);
+      releaseUnauthenticated();
       if (!device) return;
       const hub = hubs.get(device.accountId);
       if (hub && clientId) {
@@ -86,7 +104,7 @@ export function createPluginGateway({ accounts, oauth, signup = "invite", limite
           return;
         }
         if (message.type === "register") {
-          if (!limiter.allow(`register:${ip}`, 10, 10 * 60_000) || !limiter.check("register-failures", 200)) {
+          if (!limiter.allow(`register:${ip}`, 10, 10 * 60_000)) {
             send({ type: "register.error", error: "rate_limited" });
             return;
           }
@@ -103,7 +121,6 @@ export function createPluginGateway({ accounts, oauth, signup = "invite", limite
               clientId
             });
           } catch (error) {
-            if (error.code === "invalid_code") limiter.allow("register-failures", 200, 60 * 60_000);
             send({ type: "register.error", error: publicError(error) });
           }
           return;
@@ -112,6 +129,10 @@ export function createPluginGateway({ accounts, oauth, signup = "invite", limite
         return;
       }
 
+      if (websocket.revoked || !accounts.isDeviceActive(device.id)) {
+        websocket.close(4403, "device revoked");
+        return;
+      }
       const hub = hubs.get(device.accountId);
       if (hub?.handleMessage(clientId, websocket, message)) return;
       if (message.type === "call") {
@@ -155,8 +176,10 @@ export function createPluginGateway({ accounts, oauth, signup = "invite", limite
         case "devices.revoke": {
           if (typeof params.deviceId !== "string") throw codedError("invalid_request");
           const revoked = accounts.revokeDevice({ accountId: device.accountId, deviceId: params.deviceId });
-          if (revoked) setImmediate(() => disconnectDevice(params.deviceId, "device revoked"));
-          return { revoked };
+          // A removed device keeps neither its link codes nor the connections it approved.
+          const revokedGrants = revoked ? oauth.revokeDeviceGrants({ accountId: device.accountId, deviceId: params.deviceId }) : 0;
+          if (revoked) disconnectDevice(params.deviceId, "device revoked");
+          return { revoked, revokedGrants };
         }
         default:
           throw codedError("invalid_request");
@@ -165,14 +188,28 @@ export function createPluginGateway({ accounts, oauth, signup = "invite", limite
 
     function attach(authenticated, rawClient) {
       clearTimeout(authTimeout);
+      releaseUnauthenticated();
       device = authenticated;
+      // Authenticated plugins may send full-size exports.
+      if (websocket._receiver) websocket._receiver._maxPayload = MAX_MESSAGE_BYTES;
       let hub = hubs.get(device.accountId);
       if (!hub) {
-        hub = createFigmaHub();
+        hub = createFigmaHub({ maxPending: 16 });
         hubs.set(device.accountId, hub);
       }
-      clientId = hub.register(websocket, rawClient);
+      // Plugins choose their client ids; prefixing the device keeps two
+      // devices of one account from replacing each other's connection.
+      const rawId = typeof rawClient?.id === "string" ? rawClient.id : "";
+      clientId = hub.register(websocket, { ...(rawClient || {}), id: `${device.id.slice(4, 12)}-${rawId}` });
       websocket.device = device;
+    }
+
+    function releaseUnauthenticated() {
+      if (!counted) return;
+      counted = false;
+      const remaining = (unauthenticated.get(ip) || 1) - 1;
+      if (remaining > 0) unauthenticated.set(ip, remaining);
+      else unauthenticated.delete(ip);
     }
 
     function send(value) {
@@ -188,7 +225,9 @@ export function createPluginGateway({ accounts, oauth, signup = "invite", limite
 
   function disconnectDevice(deviceId, reason) {
     for (const websocket of websocketServer.clients) {
-      if (websocket.device?.id === deviceId) websocket.close(4403, reason);
+      if (websocket.device?.id !== deviceId) continue;
+      websocket.revoked = true;
+      websocket.close(4403, reason);
     }
   }
 

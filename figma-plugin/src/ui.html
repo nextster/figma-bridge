@@ -49,6 +49,11 @@
   <section id="local-view" hidden>
     <p class="hint">Keep this plugin open while your AI app reads or edits this file. Requires the local companion from <code>npm run setup</code>.</p>
     <button id="local-connect" type="button">Connect to this computer</button>
+    <form id="pair-form" hidden>
+      <label for="pair-code">6-digit code shown on this computer</label>
+      <input id="pair-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7">
+      <button type="submit">Pair</button>
+    </form>
     <details id="manual">
       <summary>Manual pairing</summary>
       <form id="pairing">
@@ -112,6 +117,7 @@
     </div>
   </section>
 
+  <script>/*__FIGMA_BRIDGE_AUTH__*/</script>
   <script>
     const RELAY_URL = '__FIGMA_BRIDGE_RELAY_URL__';
     const LOCAL_URL = 'ws://localhost:3847/bridge';
@@ -171,6 +177,7 @@
       $('relay-home').hidden = !(state.mode === 'relay' && state.relayDevice);
       $('local-connect').hidden = state.mode !== 'local' || state.connected;
       $('manual').hidden = state.mode !== 'local' || state.connected;
+      if (state.mode !== 'local') $('pair-form').hidden = true;
       resize();
     }
 
@@ -191,19 +198,29 @@
       closeSocket();
       const current = generation;
       const websocket = new WebSocket(url);
+      let queue = Promise.resolve();
       socket = websocket;
       websocket.addEventListener('open', () => {
-        if (current === generation) websocket.send(JSON.stringify(firstMessage));
+        if (current === generation && firstMessage) websocket.send(JSON.stringify(firstMessage));
       });
       websocket.addEventListener('message', event => {
         if (current !== generation) return;
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
-        if (message.type === 'rpc.request') {
-          post({ type: 'bridge-command', id: message.id, command: message.command, arguments: message.arguments });
-          return;
-        }
-        onMessage(message);
+        // Handlers may verify proofs asynchronously, so messages are processed in order.
+        queue = queue.then(async () => {
+          if (current !== generation) return;
+          if (message.type === 'rpc.request') {
+            // Commands run only after the peer proved who it is.
+            if (state.connected) post({ type: 'bridge-command', id: message.id, command: message.command, arguments: message.arguments });
+            return;
+          }
+          await onMessage(message);
+        }).catch(error => {
+          setStatus(error?.message || 'Could not verify the connection.', 'error');
+          closeSocket();
+          render();
+        });
       });
       websocket.addEventListener('close', event => {
         if (current !== generation) return;
@@ -222,6 +239,10 @@
       retryDelay = Math.min(retryDelay * 2, 30000);
     }
 
+    function sendMessage(value) {
+      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value));
+    }
+
     function markConnected() {
       state.connected = true;
       retryDelay = 1500;
@@ -229,7 +250,9 @@
       render();
     }
 
-    // Local mode: the companion on this computer.
+    // Local mode: the companion on this computer. Both sides prove knowledge of
+    // the shared token (or, when pairing, of the code shown on this computer)
+    // before the token is revealed or any command runs.
     function connectLocal(pair = false) {
       if (!state.token && !pair) {
         closeSocket();
@@ -237,26 +260,70 @@
         render();
         return;
       }
+      const session = { pair, clientNonce: FigmaBridgeAuth.nonce(), serverNonce: null, code: null, paired: false };
       $('local-connect').disabled = pair;
-      setStatus(pair ? 'Approve the request on this computer…' : 'Connecting to this computer…');
-      open(LOCAL_URL, pair ? { type: 'pair', client: state.client } : { type: 'auth', token: state.token, client: state.client }, message => {
-        if (message.type === 'pair.ok') {
-          state.token = message.token || '';
+      $('pair-form').hidden = true;
+      setStatus(pair ? 'Contacting this computer…' : 'Connecting to this computer…');
+      open(LOCAL_URL, null, async message => {
+        if (message.type === 'hello') {
+          clearTimeout(session.helloTimer);
+          if (message.protocol !== 2 || typeof message.nonce !== 'string') throw new Error('Update the Figma Bridge companion with npm run setup.');
+          session.serverNonce = message.nonce;
+          if (pair) {
+            sendMessage({ type: 'pair', client: state.client });
+          } else {
+            const proof = await FigmaBridgeAuth.proof(state.token, 'auth/client', session.serverNonce, session.clientNonce);
+            sendMessage({ type: 'auth', nonce: session.clientNonce, proof, client: state.client });
+          }
+        } else if (message.type === 'pair.code') {
+          state.localSession = session;
+          $('pair-form').hidden = false;
+          $('pair-code').value = '';
+          $('pair-code').focus();
+          setStatus('Enter the 6-digit code shown on this computer.');
+          render();
+        } else if (message.type === 'pair.ok') {
+          const expected = session.code && typeof message.token === 'string'
+            ? await FigmaBridgeAuth.proof(session.code, 'pair/server', session.serverNonce, session.clientNonce, message.token)
+            : '';
+          if (!expected || !FigmaBridgeAuth.equal(expected, message.proof)) throw new Error('Could not verify this computer. Try connecting again.');
+          session.paired = true;
+          state.token = message.token;
           post({ type: 'store-token', token: state.token });
         } else if (message.type === 'auth.ok') {
+          if (!session.paired) {
+            const expected = await FigmaBridgeAuth.proof(state.token, 'auth/server', session.serverNonce, session.clientNonce);
+            if (!FigmaBridgeAuth.equal(expected, message.proof)) throw new Error('Could not verify the Figma Bridge companion on this computer.');
+          }
+          state.localSession = null;
+          $('pair-form').hidden = true;
           $('local-connect').disabled = false;
           markConnected();
         }
       }, event => {
+        clearTimeout(session.helloTimer);
+        state.localSession = null;
+        $('pair-form').hidden = true;
         $('local-connect').disabled = false;
-        if (event.code === 4403) {
+        if (pair && event.code === 4403) {
+          setStatus(event.reason === 'pairing failed' ? 'That code did not match. Click Connect to try again.' : 'Pairing was cancelled or is unavailable right now.', 'error');
+        } else if (event.code === 4403) {
           state.token = '';
-          setStatus('Connection was not approved.', 'error');
+          setStatus('This computer no longer accepts the saved pairing. Connect again.', 'error');
+        } else if (event.code === 4408) {
+          setStatus('The pairing code expired. Click Connect to try again.', 'error');
         } else {
           setStatus('Local companion is not reachable; retrying…', 'error');
           if (state.token) scheduleRetry(() => connectLocal(false));
         }
       });
+      session.helloTimer = setTimeout(() => {
+        if (!session.serverNonce && socket?.readyState === WebSocket.OPEN) {
+          setStatus('Update the Figma Bridge companion on this computer with npm run setup.', 'error');
+          closeSocket();
+          render();
+        }
+      }, 4000);
     }
 
     // Relay mode: the hosted relay authenticates this plugin as a device.
@@ -400,6 +467,22 @@
 
     $('local-connect').addEventListener('click', () => connectLocal(true));
 
+    $('pair-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const session = state.localSession;
+      const code = $('pair-code').value.replace(/\D/g, '');
+      if (!session || code.length !== 6) {
+        setNotice('Enter all 6 digits.', 'error');
+        return;
+      }
+      session.code = code;
+      const proof = await FigmaBridgeAuth.proof(code, 'pair/client', session.serverNonce, session.clientNonce);
+      sendMessage({ type: 'pair.proof', nonce: session.clientNonce, proof, client: state.client });
+      $('pair-form').hidden = true;
+      setNotice();
+      setStatus('Checking code…');
+    });
+
     $('pairing').addEventListener('submit', event => {
       event.preventDefault();
       post({ type: 'save-token', token: $('token').value.trim() });
@@ -487,7 +570,9 @@
     });
 
     window.addEventListener('message', event => {
-      const message = event.data.pluginMessage;
+      // Only the Figma plugin host may deliver plugin messages.
+      if (event.source !== parent) return;
+      const message = event.data?.pluginMessage;
       if (!message) return;
       if (message.type === 'bridge-init') {
         state.token = message.token || '';

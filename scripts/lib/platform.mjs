@@ -53,7 +53,8 @@ export function commandInvocation(executable, args, { platform = process.platfor
     const line = [executable, ...args].map(quoteWindowsArgument).join(" ");
     return {
       command: env.ComSpec || env.COMSPEC || "cmd.exe",
-      args: ["/d", "/s", "/c", `"${line}"`],
+      // /v:off keeps delayed expansion from interpreting "!" for users who enable it globally.
+      args: ["/d", "/v:off", "/s", "/c", `"${line}"`],
       options: { windowsVerbatimArguments: true }
     };
   }
@@ -110,7 +111,11 @@ export function windowsStartupDirectory(env = process.env) {
 
 /** A hidden launcher so the companion starts at sign-in without a console window. */
 export function windowsStartupScript({ nodePath, bootstrap }) {
-  const quote = value => `""${String(value).replaceAll('"', '""')}""`;
+  // WshShell.Run expands %VARIABLES% inside the command line.
+  for (const value of [nodePath, bootstrap]) {
+    if (/[%"\r\n]/.test(String(value))) throw new Error(`Unsupported character in startup path: ${value}`);
+  }
+  const quote = value => `""${value}""`;
   return [
     "' Starts the Figma Bridge companion at sign-in without a console window.",
     "Set shell = CreateObject(\"WScript.Shell\")",

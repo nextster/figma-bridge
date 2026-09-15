@@ -32,8 +32,8 @@ test("Windows executables are found through PATHEXT and .cmd shims run via cmd.e
 
   const invocation = commandInvocation(found, ["plugin", "marketplace", "add", "C:\\Users\\Тест User\\.codex\\marketplaces\\nextster"], { platform: "win32", env });
   assert.equal(invocation.command, "C:\\Windows\\System32\\cmd.exe");
-  assert.deepEqual(invocation.args.slice(0, 3), ["/d", "/s", "/c"]);
-  assert.equal(invocation.args[3], "\"\"C:\\Users\\Тест User\\AppData\\Roaming\\npm\\codex.cmd\" \"plugin\" \"marketplace\" \"add\" \"C:\\Users\\Тест User\\.codex\\marketplaces\\nextster\"\"");
+  assert.deepEqual(invocation.args.slice(0, 4), ["/d", "/v:off", "/s", "/c"]);
+  assert.equal(invocation.args[4], "\"\"C:\\Users\\Тест User\\AppData\\Roaming\\npm\\codex.cmd\" \"plugin\" \"marketplace\" \"add\" \"C:\\Users\\Тест User\\.codex\\marketplaces\\nextster\"\"");
   assert.equal(invocation.options.windowsVerbatimArguments, true);
   assert.throws(() => commandInvocation(found, ["%PATH%"], { platform: "win32", env }), /Unsupported character/);
 
@@ -44,6 +44,7 @@ test("Windows executables are found through PATHEXT and .cmd shims run via cmd.e
 test("Windows startup launcher quotes node and bootstrap paths", () => {
   const script = windowsStartupScript({ nodePath: "C:\\Program Files\\nodejs\\node.exe", bootstrap: "C:\\Users\\Артём\\.figma-bridge\\runtime\\runtime-bootstrap.mjs" });
   assert.match(script, /shell\.Run """C:\\Program Files\\nodejs\\node\.exe"" ""C:\\Users\\Артём\\\.figma-bridge\\runtime\\runtime-bootstrap\.mjs"" companion", 0, False/);
+  assert.throws(() => windowsStartupScript({ nodePath: "C:\\%TEMP%\\node.exe", bootstrap: "C:\\b.mjs" }), /Unsupported character/);
   assert.equal(windowsStartupDirectory({ APPDATA: "C:\\Users\\A\\AppData\\Roaming" }), "C:\\Users\\A\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup");
 });
 
