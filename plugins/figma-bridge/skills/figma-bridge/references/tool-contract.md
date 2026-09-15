@@ -1,6 +1,6 @@
 # Tool contract
 
-- `status` and `list_files` never expose the pairing token.
+- `status` and `list_files` never expose pairing tokens, device secrets, or OAuth tokens.
 - `list_pages`, `document_overview`, `snapshot`, `get_selection`, `get_nodes`, `find_nodes`, `search_text`, and `audit_document` are bounded read operations.
 - `set_current_page` changes only the connected plugin's active page and does not edit the document.
 - `create_nodes` supports `FRAME`, `RECTANGLE`, `ELLIPSE`, and `TEXT` only.
@@ -18,7 +18,7 @@
 - `navigate_to_nodes` changes the active page/selection/viewport but does not edit document nodes.
 - `batch` accepts only documented operation kinds, defaults to `dryRun: true`, rolls back on execution failure, and commits a successful execution as one user-visible Undo step. Named operations can reference paths in earlier results through a single-key `$ref` object.
 - `run_script` uses the same typed allowlist and transaction engine as `batch`, requires an explicit last-resort acknowledgement, and never evaluates JavaScript. Use it only on disposable local copies.
-- `prepare_swiftui_handoff` accepts up to 20 exact screen IDs and writes a compact `handoff.json` plus bounded local PNG/image/SVG assets. Name-based SF Symbol matches are reported and skipped instead of exported; matches are candidates that code generation must verify against the visual reference.
+- `prepare_swiftui_handoff` accepts up to 20 exact screen IDs and produces a compact `handoff.json` plus bounded PNG/image/SVG assets: local files in local mode, or download links that expire after 30 minutes through the relay, where `outputDirectory` is unavailable. Name-based SF Symbol matches are reported and skipped instead of exported; matches are candidates that code generation must verify against the visual reference.
 - `delete_nodes` permanently removes explicit scene-node IDs and is marked destructive.
 - `export_png` returns at most 8 MiB. Lower the scale or export a smaller frame if it rejects the result.
-- The plugin must remain open in each Figma file that should be available to Codex.
+- The plugin must remain open and connected in each Figma file that should be available to the agent.
