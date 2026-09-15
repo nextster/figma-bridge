@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
@@ -37,14 +38,17 @@ for (const relative of [
   "scripts/dev.mjs"
 ]) run(process.execPath, ["--check", path.join(root, relative)]);
 
-run("python3", [
-  "/Users/artem/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py",
-  path.join(root, "plugins", "figma-bridge")
-]);
-run("python3", [
-  "/Users/artem/.codex/skills/.system/skill-creator/scripts/quick_validate.py",
-  path.join(root, "plugins", "figma-bridge", "skills", "figma-bridge")
-]);
+// Codex ships these validators with its system skills. They are optional so
+// checks also pass on machines and CI runners without a local Codex install.
+const codexSkills = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "skills", ".system");
+for (const [validator, target] of [
+  ["plugin-creator/scripts/validate_plugin.py", path.join(root, "plugins", "figma-bridge")],
+  ["skill-creator/scripts/quick_validate.py", path.join(root, "plugins", "figma-bridge", "skills", "figma-bridge")]
+]) {
+  const script = path.join(codexSkills, validator);
+  if (fs.existsSync(script)) run("python3", [script, target]);
+  else process.stdout.write(`Skipped optional Codex validator: ${validator}\n`);
+}
 
 if (fs.existsSync(path.join(root, ".git"))) run("git", ["-C", root, "diff", "--check"]);
 

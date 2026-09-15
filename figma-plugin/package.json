@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && node --import tsx --test tests/*.test.ts"
+    "test": "npm run typecheck && node --import tsx --test \"tests/*.test.ts\""
   },
   "devDependencies": {
     "@figma/plugin-typings": "1.133.0",
