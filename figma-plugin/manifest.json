@@ -4,10 +4,18 @@
   "api": "1.0.0",
   "main": "dist/code.js",
   "ui": "dist/ui.html",
-  "editorType": ["figma"],
+  "editorType": [
+    "figma"
+  ],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["none"],
-    "devAllowedDomains": ["ws://localhost:3847"]
+    "allowedDomains": [
+      "wss://figma-bridge.fly.dev"
+    ],
+    "devAllowedDomains": [
+      "ws://localhost:3847",
+      "ws://localhost:8787"
+    ],
+    "reasoning": "Figma Bridge connects this file to the user's own AI app, either through the Figma Bridge companion on this computer or through the Figma Bridge relay that the user signed in to."
   }
 }

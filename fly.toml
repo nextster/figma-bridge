@@ -1,0 +1,42 @@
+app = "figma-bridge"
+primary_region = "fra"
+
+[build]
+  dockerfile = "relay/Dockerfile"
+
+[env]
+  PORT = "8080"
+  FIGMA_BRIDGE_PUBLIC_URL = "https://figma-bridge.fly.dev"
+  FIGMA_BRIDGE_DB = "/data/figma-bridge.db"
+  FIGMA_BRIDGE_SIGNUP = "invite"
+  FIGMA_BRIDGE_TRUST_PROXY = "fly"
+
+[mounts]
+  source = "figma_bridge_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"
+
+# Plugins hold WebSocket connections and requests are routed in memory, so the
+# relay must run as exactly one machine.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 500
+    hard_limit = 1000
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"

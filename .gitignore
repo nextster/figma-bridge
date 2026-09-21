@@ -4,3 +4,6 @@ figma-plugin/node_modules/
 figma-plugin/dist/
 dist/
 *.log
+relay.db
+relay.db-shm
+relay.db-wal

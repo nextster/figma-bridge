@@ -1,0 +1,17 @@
+{
+  "name": "nextster",
+  "owner": {
+    "name": "Nextster"
+  },
+  "plugins": [
+    {
+      "name": "figma-bridge",
+      "source": "./plugins/figma-bridge",
+      "description": "Inspect and edit open Figma files through the Figma Bridge plugin.",
+      "category": "design"
+    }
+  ],
+  "metadata": {
+    "description": "Nextster bridge plugins for Claude Code. Figma Bridge connects Claude Code to open Figma files."
+  }
+}

@@ -1,0 +1,187 @@
+// Relay accounts are anonymous: an account is created from an invite by a
+// Figma plugin installation, and further plugin installations join it with a
+// short-lived link code issued by an existing device.
+
+import { formatCode, hashSecret, normalizeCode, randomCode, randomToken, secretMatches } from "./codes.mjs";
+
+const INVITE_LENGTH = 12;
+const LINK_CODE_LENGTH = 8;
+const LINK_CODE_TTL_MS = 10 * 60_000;
+const DEFAULT_INVITE_TTL_MS = 7 * 24 * 60 * 60_000;
+const MAX_DEVICES_PER_ACCOUNT = 20;
+const MAX_ACTIVE_LINK_CODES = 5;
+
+export function migrateAccounts(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS relay_accounts (
+      id TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS relay_devices (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES relay_accounts(id),
+      secret_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      revoked_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS relay_devices_account ON relay_devices(account_id);
+    CREATE TABLE IF NOT EXISTS relay_invites (
+      code_hash TEXT PRIMARY KEY,
+      note TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER,
+      used_by_account TEXT
+    );
+    CREATE TABLE IF NOT EXISTS relay_link_codes (
+      code_hash TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES relay_accounts(id),
+      created_by_device TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER
+    );
+  `);
+}
+
+export function createAccountsStore(db, { now = () => Date.now() } = {}) {
+  const statements = {
+    insertAccount: db.prepare("INSERT INTO relay_accounts (id, created_at) VALUES (?, ?)"),
+    insertDevice: db.prepare("INSERT INTO relay_devices (id, account_id, secret_hash, name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)"),
+    device: db.prepare("SELECT * FROM relay_devices WHERE id = ?"),
+    touchDevice: db.prepare("UPDATE relay_devices SET last_seen_at = ? WHERE id = ? AND last_seen_at < ?"),
+    activeDevices: db.prepare("SELECT id, name, created_at, last_seen_at FROM relay_devices WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at"),
+    countDevices: db.prepare("SELECT COUNT(*) AS count FROM relay_devices WHERE account_id = ? AND revoked_at IS NULL"),
+    revokeDevice: db.prepare("UPDATE relay_devices SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL"),
+    deleteDeviceLinkCodes: db.prepare("DELETE FROM relay_link_codes WHERE created_by_device = ? AND account_id = ?"),
+    activeDevice: db.prepare("SELECT 1 AS active FROM relay_devices WHERE id = ? AND revoked_at IS NULL"),
+    insertInvite: db.prepare("INSERT INTO relay_invites (code_hash, note, created_at, expires_at) VALUES (?, ?, ?, ?)"),
+    useInvite: db.prepare("UPDATE relay_invites SET used_at = ?, used_by_account = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?"),
+    insertLinkCode: db.prepare("INSERT INTO relay_link_codes (code_hash, account_id, created_by_device, created_at, expires_at) VALUES (?, ?, ?, ?, ?)"),
+    countLinkCodes: db.prepare("SELECT COUNT(*) AS count FROM relay_link_codes WHERE account_id = ? AND used_at IS NULL AND expires_at > ?"),
+    linkCode: db.prepare("SELECT * FROM relay_link_codes WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?"),
+    useLinkCode: db.prepare("UPDATE relay_link_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL"),
+    pruneLinkCodes: db.prepare("DELETE FROM relay_link_codes WHERE expires_at < ?"),
+    pruneInvites: db.prepare("DELETE FROM relay_invites WHERE used_at IS NULL AND expires_at < ?")
+  };
+
+  function transaction(work) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = work();
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  function newDevice(accountId, name, timestamp) {
+    const id = randomToken("fbd_", 16);
+    const secret = randomToken("fbs_", 32);
+    statements.insertDevice.run(id, accountId, hashSecret(secret), cleanDeviceName(name), timestamp, timestamp);
+    return { id, secret, accountId };
+  }
+
+  return {
+    createInvite({ note = "", ttlMs = DEFAULT_INVITE_TTL_MS } = {}) {
+      const code = randomCode(INVITE_LENGTH);
+      const timestamp = now();
+      statements.insertInvite.run(hashSecret(code), String(note).slice(0, 200), timestamp, timestamp + ttlMs);
+      return { code: formatCode(code), expiresAt: new Date(timestamp + ttlMs).toISOString() };
+    },
+
+    /**
+     * Redeems a link code or an invite. Link codes add a device to an existing
+     * account; invites (or open signup) create a new account.
+     */
+    register({ code, deviceName, signup }) {
+      const normalized = normalizeCode(code);
+      const timestamp = now();
+      return transaction(() => {
+        statements.pruneLinkCodes.run(timestamp - LINK_CODE_TTL_MS);
+        if (normalized.length === LINK_CODE_LENGTH) {
+          const link = statements.linkCode.get(hashSecret(normalized), timestamp);
+          if (link) {
+            if (statements.countDevices.get(link.account_id).count >= MAX_DEVICES_PER_ACCOUNT) throw codedError("device_limit");
+            statements.useLinkCode.run(timestamp, link.code_hash);
+            return { ...newDevice(link.account_id, deviceName, timestamp), created: false };
+          }
+        }
+        if (signup === "closed") throw codedError("invalid_code");
+        if (signup !== "open") {
+          if (normalized.length !== INVITE_LENGTH) throw codedError("invalid_code");
+          const accountId = randomToken("acct_", 12);
+          const used = statements.useInvite.run(timestamp, accountId, hashSecret(normalized), timestamp);
+          if (used.changes !== 1) throw codedError("invalid_code");
+          statements.insertAccount.run(accountId, timestamp);
+          return { ...newDevice(accountId, deviceName, timestamp), created: true };
+        }
+        const accountId = randomToken("acct_", 12);
+        statements.insertAccount.run(accountId, timestamp);
+        return { ...newDevice(accountId, deviceName, timestamp), created: true };
+      });
+    },
+
+    authenticateDevice({ id, secret }) {
+      if (typeof id !== "string" || typeof secret !== "string") return null;
+      const device = statements.device.get(id);
+      if (!device || device.revoked_at !== null || !secretMatches(secret, device.secret_hash)) return null;
+      const timestamp = now();
+      statements.touchDevice.run(timestamp, id, timestamp - 60_000);
+      return { id: device.id, accountId: device.account_id, name: device.name };
+    },
+
+    createLinkCode({ accountId, deviceId }) {
+      const timestamp = now();
+      return transaction(() => {
+        if (statements.countLinkCodes.get(accountId, timestamp).count >= MAX_ACTIVE_LINK_CODES) throw codedError("rate_limited");
+        const code = randomCode(LINK_CODE_LENGTH);
+        statements.insertLinkCode.run(hashSecret(code), accountId, deviceId, timestamp, timestamp + LINK_CODE_TTL_MS);
+        return { code: formatCode(code), expiresAt: new Date(timestamp + LINK_CODE_TTL_MS).toISOString() };
+      });
+    },
+
+    listDevices(accountId) {
+      return statements.activeDevices.all(accountId).map(row => ({
+        deviceId: row.id,
+        name: row.name,
+        createdAt: new Date(row.created_at).toISOString(),
+        lastSeenAt: new Date(row.last_seen_at).toISOString()
+      }));
+    },
+
+    revokeDevice({ accountId, deviceId }) {
+      return transaction(() => {
+        const revoked = statements.revokeDevice.run(now(), deviceId, accountId).changes === 1;
+        if (revoked) statements.deleteDeviceLinkCodes.run(deviceId, accountId);
+        return revoked;
+      });
+    },
+
+    isDeviceActive(deviceId) {
+      return Boolean(statements.activeDevice.get(deviceId));
+    },
+
+    prune() {
+      const timestamp = now();
+      statements.pruneLinkCodes.run(timestamp - LINK_CODE_TTL_MS);
+      statements.pruneInvites.run(timestamp);
+    }
+  };
+}
+
+function cleanDeviceName(value) {
+  // Control and bidirectional formatting characters could disguise a device name.
+  const cleaned = typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80)
+    : "";
+  return cleaned || "Figma";
+}
+
+function codedError(code) {
+  return Object.assign(new Error(code), { code });
+}

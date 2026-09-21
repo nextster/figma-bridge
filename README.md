@@ -1,12 +1,15 @@
 # Figma Bridge
 
-Figma Bridge is a local, bidirectional connection between Codex and Figma Desktop. It avoids the official remote MCP quota by using the public Figma Plugin API in the user's open desktop file.
+Figma Bridge is a bidirectional connection between AI agents (Claude Code, Claude Desktop, claude.ai, and Codex) and open Figma files. It avoids the official remote MCP quota by using the public Figma Plugin API inside the file where the Figma Bridge plugin is running.
+
+It works in two modes:
 
 ```text
-Codex MCP -> stable bootstrap -> Unix socket -> local companion -> authenticated loopback WebSocket -> Figma plugin
+Local (default):  MCP client -> stdio MCP server -> authenticated local control channel -> companion -> loopback WebSocket -> Figma plugin
+Relay (optional): MCP client -> HTTPS MCP + OAuth -> Figma Bridge relay <- outbound WSS <- Figma plugin
 ```
 
-The bridge is intentionally local. It has no cloud relay, Figma personal access token, or arbitrary `eval` tool. Every document operation is a named command with validated inputs. A last-resort typed scripting tool composes only those allowlisted commands; it cannot execute JavaScript.
+Local mode keeps all design data on your computer. Relay mode removes the local companion and works from any operating system and from hosted clients such as claude.ai, but design data then passes through the relay. The bridge has no Figma personal access token and no arbitrary `eval` tool. Every document operation is a named command with validated inputs. A last-resort typed scripting tool composes only those allowlisted commands; it cannot execute JavaScript.
 
 ## Current tools
 
@@ -41,16 +44,53 @@ Domain-specific generators, such as an exact SDF smooth-union generator, are int
 
 ## Install
 
+On macOS, run in Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nextster/figma-bridge/main/install.sh | sh
+```
+
+On Windows, run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/nextster/figma-bridge/main/install.ps1 | iex
+```
+
+Or ask your agent to do it: [docs/site/install-button.html](docs/site/install-button.html) is a website fragment whose buttons open Codex, the Claude desktop app, or Claude Code with this request already typed in. The installer uses Node.js 22 or newer when present and otherwise installs a pinned, SHA-256-verified Node.js under `~/.figma-bridge`, then runs the same setup as a checkout. Pass options after `sh -s --` on macOS, or through `& ([scriptblock]::Create((irm …/install.ps1))) --no-claude-desktop` on Windows; use the `uninstall` command to remove it.
+
+Figma Bridge is a development plugin, so it runs in Figma Desktop on macOS and Windows; publishing is not available (see [docs/PUBLISHING.md](docs/PUBLISHING.md)). After installing, choose **Plugins → Development → Import plugin from manifest** in Figma Desktop and select `~/.figma-bridge/figma-plugin/manifest.json` (`%USERPROFILE%\.figma-bridge\figma-plugin\manifest.json` on Windows); setup prints the exact path. Run **Figma Bridge** in every file the agent should use and keep it open.
+
+## Local mode
+
+From a checkout:
+
 ```bash
 npm install
 npm --prefix figma-plugin install
-npm run verify
 npm run setup
 ```
 
-Then import [figma-plugin/manifest.json](figma-plugin/manifest.json) once through **Figma Desktop -> Plugins -> Development -> Import plugin from manifest** and run **Figma Bridge** in the file Codex should use. Click **Connect to Codex** and approve the local macOS dialog. Figma stores the resulting token in `clientStorage` for later runs. Manual token entry through `npm run bridge -- pair` remains available for troubleshooting.
+Setup builds the Figma plugin, installs a versioned runtime under `~/.figma-bridge` (`%USERPROFILE%\.figma-bridge` on Windows) and registers Figma Bridge with every client it finds:
 
-`npm run setup` adds Figma Bridge to the shared Nextster marketplace under `~/.codex/marketplaces/nextster` and points it at the stable runtime bootstrap. It preserves other Nextster plugins already present there. Open a new Codex task after installing or changing MCP code or tools. Restarting Codex is not required.
+- **Codex and Claude Code** (CLI and the Code tab of the Claude desktop app) install `figma-bridge@nextster`, including the skill, from the marketplace shared with other Nextster bridges in `~/.agent-plugins/nextster` (`NEXTSTER_MARKETPLACE_DIR` overrides it). One plugin directory carries both client manifests; setup adds its entries to both manifests without touching other bridges, and moves or merges an older `~/.codex/marketplaces/nextster` copy there.
+- **Claude Desktop chat** gets a `figma-bridge` entry in `claude_desktop_config.json` whenever Claude Desktop is installed. Other settings are preserved and the previous file is kept as `claude_desktop_config.json.figma-bridge-backup`; quit and reopen Claude Desktop afterwards.
+
+The companion starts at sign-in (a LaunchAgent on macOS, a hidden Startup launcher on Windows) and MCP clients also start it on demand. Use `--no-codex`, `--no-claude-code`, `--no-claude-desktop`, `--no-claude` (both Claude clients), or `--no-autostart` to skip parts, and `npm run uninstall` to remove autostart and every client registration.
+
+In the plugin choose **This computer → Connect to this computer**, then type the 6-digit code that the Figma Bridge dialog shows on your computer. Figma stores the resulting token in `clientStorage`. Manual token entry through `npm run bridge -- pair` remains available for troubleshooting. Open a new agent task or session after installing or changing MCP tools.
+
+## Relay mode
+
+The relay is an invite-only service. The reference deployment is `https://figma-bridge.fly.dev`; see [docs/RELAY.md](docs/RELAY.md) to deploy your own and create invites.
+
+1. In the plugin choose **Relay**, enter your invite code, and keep the plugin open. To add another Figma installation to the same account, choose **Link another Figma** and enter the shown code there.
+2. Add the MCP server to your client:
+   - **Claude Code:** `claude plugin marketplace add nextster/figma-bridge`, then `claude plugin install figma-bridge@figma-bridge`, and authenticate with `/mcp`. From a checkout, `npm run setup -- --relay` installs the same plugin locally. Without the skill: `claude mcp add --transport http figma-bridge https://figma-bridge.fly.dev/mcp`.
+   - **Codex:** `codex mcp add figma-bridge --url https://figma-bridge.fly.dev/mcp`, or `npm run setup -- --relay` for the plugin with the skill followed by `codex mcp login figma-bridge`.
+   - **claude.ai and Claude Desktop chat:** **Settings → Connectors → Add custom connector** with `https://figma-bridge.fly.dev/mcp`.
+3. The client opens a Figma Bridge page in your browser with a code. In the plugin choose **Connect AI app**, enter the code, check the app name, and choose **Allow**. The browser returns to the client.
+
+Connected apps and devices can be revoked from the plugin. In relay mode `prepare_swiftui_handoff` returns download links that expire after 30 minutes instead of writing files; agents should download what they need immediately.
 
 ## Development loop
 
@@ -61,16 +101,30 @@ npm run verify
 npm run dev:unlink
 ```
 
-`dev:link` writes an owner-only `~/.figma-bridge/dev-link.json`. The installed stable bootstrap then makes new Codex tasks load the checkout MCP adapter and restarts the companion from the checkout. It does not rewrite Codex configuration or the versioned plugin cache. `dev:unlink` removes the pointer and returns both processes to the bundled runtime.
+`dev:link` writes an owner-only `~/.figma-bridge/dev-link.json`. The installed stable bootstrap then makes new agent sessions load the checkout MCP adapter and restarts the companion from the checkout. It does not rewrite client configuration or plugin caches. `dev:unlink` removes the pointer and returns both processes to the bundled runtime.
 
-Already open Codex tasks keep their initialized MCP process and tool schema. Use a new task after MCP changes; neither Codex nor the app server needs a restart.
+Already open sessions keep their initialized MCP process and tool schema. Use a new task or session after MCP changes; the apps themselves do not need a restart.
+
+Run the relay locally with `FIGMA_BRIDGE_PUBLIC_URL=http://localhost:8787 PORT=8787 FIGMA_BRIDGE_DB=./relay.db npm run relay`, and build the plugin against it with `FIGMA_BRIDGE_RELAY_URL=ws://localhost:8787/plugin npm run build`. Windows checks are manual for now; follow [docs/WINDOWS-TESTING.md](docs/WINDOWS-TESTING.md).
 
 ## Security model
 
-- HTTP/WebSocket binds to `127.0.0.1` only.
-- MCP clients use an owner-only Unix socket under `~/.figma-bridge`.
-- The Figma plugin authenticates with a random owner-only token.
+Local mode:
+
+- HTTP/WebSocket binds to `127.0.0.1` and `::1` only.
+- MCP adapters reach the companion through an owner-only Unix socket on macOS and Linux, or a named pipe with a random per-install name on Windows. Every control request and response is authenticated with an HMAC key from the owner-only state file, and requests are fresh and single-use.
+- First pairing requires the 6-digit code from a dialog on the computer. Afterwards the plugin and companion prove knowledge of a random owner-only token to each other with HMAC before the plugin accepts commands, so a process squatting on the port learns nothing.
 - Tokens are never returned by MCP status or written to logs.
+
+Relay mode:
+
+- MCP clients authenticate with OAuth 2.1 (dynamic client registration, PKCE S256, rotating refresh tokens with reuse detection). Redirects are limited to loopback apps and the Claude callbacks.
+- A connection is approved only by typing the code from the authorization page into a plugin that belongs to the account; the relay never pushes approval prompts.
+- Accounts are created from invites; plugin installations authenticate as devices with hashed secrets, and every tool call reaches only the Figma files of the account that owns the grant.
+- The relay stores accounts, devices, and OAuth grants, but not design data. Handoff assets are kept in memory for 30 minutes behind unguessable download links.
+
+Both modes:
+
 - Commands are allowlisted and size-limited.
 - `run_script` is declarative, requires an explicit last-resort acknowledgement, and is intended only for disposable local copies. It does not widen the command allowlist.
 - Node deletion is exposed as a destructive MCP tool and requires exact node IDs.

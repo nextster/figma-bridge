@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createControlServer, ensureState } from "../mcp/control.mjs";
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(pluginRoot, "mcp", "server.mjs");
@@ -14,28 +14,21 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "figma-bridge-mcp-"));
   const socketPath = path.join(directory, "control.sock");
   const requests = [];
-  const control = net.createServer(socket => {
-    socket.setEncoding("utf8");
-    let buffer = "";
-    socket.on("data", chunk => {
-      buffer += chunk;
-      const newline = buffer.indexOf("\n");
-      if (newline < 0) return;
-      const request = JSON.parse(buffer.slice(0, newline));
-      requests.push(request);
-      const result = request.method === "bridge.status"
-        ? { version: "0.1.0", clients: [] }
-        : request.method === "clients.list"
-          ? [{ id: "file:page", fileName: "Test" }]
-          : request.params.command === "handoff.prepareSwiftUI"
-            ? { file: { name: "Test" }, assets: [{ key: "screen:1:2", kind: "screen-png" }], _assetRequests: [{ key: "screen:1:2", kind: "screen-png", nodeId: "1:2", name: "Screen" }] }
-            : request.params.command === "handoff.exportAsset"
-              ? { data: "aGVsbG8=", mimeType: "image/png", extension: "png", bytes: 5 }
-          : request.params.command === "nodes.exportPng"
-            ? { node: { id: "1:2", type: "FRAME" }, mimeType: "image/png", data: "aGVsbG8=" }
-            : { forwarded: request.params };
-      socket.write(`${JSON.stringify({ id: request.id, ok: true, result })}\n`);
-    });
+  const env = { ...process.env, FIGMA_BRIDGE_STATE_DIR: directory, FIGMA_BRIDGE_SOCKET: socketPath, FIGMA_BRIDGE_AUTOSTART: "0" };
+  const state = ensureState(env);
+  const control = createControlServer({
+    secret: state.controlSecret,
+    async dispatch(method, params) {
+      requests.push({ method, params });
+      if (method === "bridge.status") return { version: "0.1.0", clients: [] };
+      if (method === "clients.list") return [{ id: "file:page", fileName: "Test" }];
+      if (params.command === "handoff.prepareSwiftUI") {
+        return { file: { name: "Test" }, assets: [{ key: "screen:1:2", kind: "screen-png" }], _assetRequests: [{ key: "screen:1:2", kind: "screen-png", nodeId: "1:2", name: "Screen" }] };
+      }
+      if (params.command === "handoff.exportAsset") return { data: "aGVsbG8=", mimeType: "image/png", extension: "/../../../escape.png", bytes: 5 };
+      if (params.command === "nodes.exportPng") return { node: { id: "1:2", type: "FRAME" }, mimeType: "image/png", data: "aGVsbG8=" };
+      return { forwarded: params };
+    }
   });
   await new Promise((resolve, reject) => {
     control.once("error", reject);
@@ -43,7 +36,7 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   });
 
   const child = spawn(process.execPath, [serverPath], {
-    env: { ...process.env, FIGMA_BRIDGE_SOCKET: socketPath },
+    env,
     stdio: ["pipe", "pipe", "pipe"]
   });
   t.after(async () => {
@@ -125,7 +118,8 @@ test("MCP exposes bounded Figma tools and forwards calls", async t => {
   assert.deepEqual(requests.find(request => request.params?.command === "shaders.list").params.arguments, { type: "fill" });
   assert.deepEqual(requests.find(request => request.params?.command === "shaders.apply").params.arguments, { nodeIds: ["1:2"], shaderId: "shader:glass", properties: { Frost: 0.4 } });
   const handoff = JSON.parse(byId(17).result.content[0].text);
-  assert.equal(handoff.assets[0].export.path, path.join(directory, "Screen.png"));
+  // A traversal attempt in the plugin-supplied extension stays inside the handoff directory.
+  assert.equal(handoff.assets[0].export.path, path.join(directory, "Screen.escapepn"));
   assert.equal(handoff.manifestPath, path.join(directory, "handoff.json"));
 });
 

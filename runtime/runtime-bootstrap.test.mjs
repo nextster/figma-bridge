@@ -12,15 +12,15 @@ test("stable bootstrap switches between bundled and checkout entrypoints", async
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "figma-bridge-bootstrap-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
   const runtimeRoot = path.join(stateDir, "runtime", "0.1.0");
-  await mkdir(path.join(runtimeRoot, "plugin", "mcp"), { recursive: true });
+  await mkdir(path.join(runtimeRoot, "plugins", "figma-bridge", "mcp"), { recursive: true });
   await mkdir(path.join(runtimeRoot, "companion", "src"), { recursive: true });
-  await writeFile(path.join(runtimeRoot, "plugin", "mcp", "server.mjs"), "export {};\n");
+  await writeFile(path.join(runtimeRoot, "plugins", "figma-bridge", "mcp", "server.mjs"), "export {};\n");
   await writeFile(path.join(runtimeRoot, "companion", "src", "server.mjs"), "export {};\n");
   await writePrivate(path.join(stateDir, "runtime", "current.json"), { schemaVersion: 1, runtimeRoot });
 
   const bundled = await resolveRuntime("mcp", { stateDir });
   assert.equal(bundled.source, "bundled");
-  assert.equal(bundled.entrypoint, await realpath(path.join(runtimeRoot, "plugin", "mcp", "server.mjs")));
+  assert.equal(bundled.entrypoint, await realpath(path.join(runtimeRoot, "plugins", "figma-bridge", "mcp", "server.mjs")));
 
   await writePrivate(path.join(stateDir, "dev-link.json"), {
     schemaVersion: DEV_LINK_SCHEMA_VERSION,
@@ -39,6 +39,17 @@ test("stable bootstrap rejects a development pointer with broad permissions", as
   await writeFile(pointer, `${JSON.stringify({ schemaVersion: 1, checkoutRoot: projectRoot })}\n`, { mode: 0o644 });
   await chmod(pointer, 0o644);
   await assert.rejects(resolveRuntime("mcp", { stateDir }), /permissions must be 0600/);
+});
+
+test("Windows skips POSIX permission bits that NTFS does not report", async t => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "figma-bridge-bootstrap-win-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const pointer = path.join(stateDir, "dev-link.json");
+  await writeFile(pointer, `${JSON.stringify({ schemaVersion: 1, checkoutRoot: projectRoot })}\n`, { mode: 0o666 });
+  await chmod(pointer, 0o666);
+  const resolved = await resolveRuntime("mcp", { stateDir, platform: "win32" });
+  assert.equal(resolved.source, "checkout");
+  assert.equal(resolved.entrypoint, path.join(projectRoot, "plugins", "figma-bridge", "mcp", "server.mjs"));
 });
 
 async function writePrivate(filePath, value) {

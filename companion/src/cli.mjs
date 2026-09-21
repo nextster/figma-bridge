@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { requestControl } from "./client.mjs";
-import { ensureState } from "./state.mjs";
+import { ensureState, requestControl } from "../../plugins/figma-bridge/mcp/control.mjs";
 
 const command = process.argv[2] || "status";
 
@@ -12,6 +11,9 @@ try {
   } else if (command === "status") {
     const status = await requestControl("bridge.status");
     process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+  } else if (command === "stop") {
+    const result = await requestControl("bridge.shutdown");
+    process.stdout.write(`Stopping Figma Bridge companion ${result.pid}.\n`);
   } else if (command === "files") {
     const clients = await requestControl("clients.list");
     process.stdout.write(`${JSON.stringify(clients, null, 2)}\n`);
