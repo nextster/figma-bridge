@@ -143,19 +143,16 @@ test("anonymous plugin sockets cannot send large frames or pile up", async t => 
   big.send({ type: "register", code: "x".repeat(100 * 1024) });
   assert.equal((await big.closed()).code, 1009);
 
+  // The server frees a slot when it processes a close, which can lag the client.
   const held = [];
-  for (let index = 0; index < 8; index += 1) held.push(await connectPlugin(relay));
+  for (let index = 0; index < 8; index += 1) held.push(await connectWhenAllowed(relay));
   await assert.rejects(connectPlugin(relay), /unexpected 403/);
   held[0].close();
   await held[0].closed();
-  // The server releases the slot when it processes the close, which can lag the client.
-  let replacement = null;
-  for (let attempt = 0; attempt < 50 && !replacement; attempt += 1) {
-    replacement = await connectPlugin(relay).catch(() => null);
-    if (!replacement) await new Promise(resolve => setTimeout(resolve, 20));
-  }
-  assert.ok(replacement);
-  replacement.close();
+  const replacement = await connectWhenAllowed(relay);
+  const open = [...held.slice(1), replacement];
+  for (const socket of open) socket.close();
+  await Promise.all(open.map(socket => socket.closed()));
 
   // Authenticated devices may still send full-size exports.
   const plugin = await registeredPlugin(relay, "Large export");
@@ -225,9 +222,20 @@ async function startRelay(t) {
   return relay;
 }
 
+async function connectWhenAllowed(relay) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await connectPlugin(relay);
+    } catch (error) {
+      if (attempt >= 50 || !/unexpected 403/.test(error.message)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+}
+
 async function registeredPlugin(relay, fileName) {
   const invite = relay.accounts.createInvite();
-  const plugin = await connectPlugin(relay);
+  const plugin = await connectWhenAllowed(relay);
   plugin.send({ type: "register", code: invite.code, deviceName: fileName, client: { id: `client-${fileName.replace(/\W/g, "")}`, fileName } });
   const registered = await plugin.next("register.ok");
   return Object.assign(plugin, { accountId: registered.accountId, device: registered.device });
