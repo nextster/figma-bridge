@@ -475,12 +475,17 @@
         setNotice('Enter all 6 digits.', 'error');
         return;
       }
-      session.code = code;
-      const proof = await FigmaBridgeAuth.proof(code, 'pair/client', session.serverNonce, session.clientNonce);
-      sendMessage({ type: 'pair.proof', nonce: session.clientNonce, proof, client: state.client });
-      $('pair-form').hidden = true;
-      setNotice();
-      setStatus('Checking code…');
+      try {
+        session.code = code;
+        const proof = await FigmaBridgeAuth.proof(code, 'pair/client', session.serverNonce, session.clientNonce);
+        if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('The connection to this computer closed. Click Connect to try again.');
+        sendMessage({ type: 'pair.proof', nonce: session.clientNonce, proof, client: state.client });
+        $('pair-form').hidden = true;
+        setNotice();
+        setStatus('Checking code…');
+      } catch (error) {
+        setStatus(error?.message || 'Could not send the code.', 'error');
+      }
     });
 
     $('pairing').addEventListener('submit', event => {
@@ -569,9 +574,9 @@
       render();
     });
 
+    // Figma relays plugin messages from its own frame, which is not necessarily
+    // this iframe's parent, so the sender cannot be compared with parent.
     window.addEventListener('message', event => {
-      // Only the Figma plugin host may deliver plugin messages.
-      if (event.source !== parent) return;
       const message = event.data?.pluginMessage;
       if (!message) return;
       if (message.type === 'bridge-init') {
@@ -597,6 +602,8 @@
       }
     });
 
+    // Show the default mode right away; bridge-init then restores the saved one.
+    render();
     post({ type: 'ui-ready' });
   </script>
 </body>
