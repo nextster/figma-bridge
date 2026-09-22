@@ -66,7 +66,8 @@ const RELAY_DEVICE_KEY = "figma-bridge-relay-device";
 
 figma.showUI(__html__, { width: 360, height: 360, themeColors: true });
 
-void initialize();
+// The UI requests its state with ui-ready once its script runs; sending it
+// earlier as well made the UI start two connections.
 
 async function initialize(): Promise<void> {
   const [token, mode, relayDevice] = await Promise.all([

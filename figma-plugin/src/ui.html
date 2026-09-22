@@ -317,8 +317,11 @@
           if (state.token) scheduleRetry(() => connectLocal(false));
         }
       });
+      // Bound to this attempt's socket: a timer left over from an earlier,
+      // replaced attempt must not judge or close the current connection.
+      const attempt = socket;
       session.helloTimer = setTimeout(() => {
-        if (!session.serverNonce && socket?.readyState === WebSocket.OPEN) {
+        if (!session.serverNonce && socket === attempt && attempt.readyState === WebSocket.OPEN) {
           setStatus('Update the Figma Bridge companion on this computer with npm run setup.', 'error');
           closeSocket();
           render();
