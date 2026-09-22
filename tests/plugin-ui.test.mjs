@@ -107,6 +107,40 @@ test("the plugin UI reconnects with a saved token by proving it, never sending i
   assert.match(ui.element("status").textContent, /Could not verify the Figma Bridge companion/);
 });
 
+test("a replaced connection attempt cannot close the connection that replaced it", async () => {
+  const ui = loadUi();
+  const token = crypto.randomBytes(32).toString("base64url");
+  // A second start-up message makes the UI replace its first connection attempt.
+  ui.deliver({ type: "bridge-init", token, mode: "local", relayDevice: null, client: { fileName: "Design", pageName: "Home" } });
+  ui.deliver({ type: "bridge-init", token, mode: "local", relayDevice: null, client: { fileName: "Design", pageName: "Home" } });
+  const [first, second] = ui.sockets;
+  assert.equal(first.closed, true);
+  second.emit("open");
+  second.receive({ type: "hello", protocol: 2, nonce: "server-nonce-0123456789" });
+  await ui.settle();
+  const auth = second.sent.at(-1);
+  second.receive({ type: "auth.ok", clientId: "c", proof: proof(token, "auth/server", "server-nonce-0123456789", auth.nonce) });
+  await ui.settle();
+  assert.match(ui.element("status").textContent, /^Connected to this computer/);
+
+  // The first attempt's hello timeout fires later and must leave the live connection alone.
+  ui.runTimers();
+  await ui.settle();
+  assert.equal(second.closed, false);
+  assert.match(ui.element("status").textContent, /^Connected to this computer/);
+});
+
+test("a companion that never says hello is reported as outdated", async () => {
+  const ui = loadUi();
+  ui.deliver({ type: "bridge-init", token: "t".repeat(43), mode: "local", relayDevice: null, client: {} });
+  const socket = ui.sockets.at(-1);
+  socket.emit("open");
+  ui.runTimers();
+  await ui.settle();
+  assert.equal(socket.closed, true);
+  assert.match(ui.element("status").textContent, /Update the Figma Bridge companion/);
+});
+
 function loadUi() {
   const html = fs.readFileSync(path.join(root, "figma-plugin/src/ui.html"), "utf8");
   const [authScript, mainScript] = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match => match[1]);
@@ -121,6 +155,7 @@ function loadUi() {
   const posts = [];
   const sockets = [];
   const listeners = {};
+  const timers = [];
 
   class FakeWebSocket {
     static OPEN = 1;
@@ -157,8 +192,11 @@ function loadUi() {
       body: { scrollHeight: 320 }
     },
     requestAnimationFrame: fn => fn(),
-    setTimeout: () => 0,
-    clearTimeout: () => {},
+    setTimeout: (fn, delay) => {
+      timers.push({ fn, delay, cancelled: false });
+      return timers.length;
+    },
+    clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cancelled = true; },
     Promise
   });
   vm.runInContext(authSource, context);
@@ -173,6 +211,9 @@ function loadUi() {
       for (const fn of listeners.message || []) fn({ source: {}, data: { pluginMessage } });
     },
     click: id => { for (const fn of element(id).listeners.click || []) fn({}); },
+    runTimers: () => {
+      for (const timer of timers.splice(0)) if (!timer.cancelled) timer.fn();
+    },
     submit: async id => {
       await Promise.all((element(id).listeners.submit || []).map(fn => fn({ preventDefault() {} })));
       await settle();
