@@ -65,10 +65,71 @@ test("the plugin UI starts, pairs with the code, and runs commands only after mu
   await ui.settle();
   assert.deepEqual(ui.posts.find(message => message.type === "store-token"), { type: "store-token", token });
   assert.match(ui.element("status").textContent, /^Connected to this computer · Design · Home$/);
+  // Once paired, only Unpair is offered: no code field, Connect, or manual token.
+  assert.equal(ui.element("pair-form").hidden, true);
+  assert.equal(ui.element("local-connect").hidden, true);
+  assert.equal(ui.element("manual").hidden, true);
+  assert.equal(ui.element("local-unpair").hidden, false);
 
   socket.receive({ type: "rpc.request", id: "r1", command: "document.pages", arguments: {} });
   await ui.settle();
   assert.deepEqual(ui.posts.find(message => message.type === "bridge-command"), { type: "bridge-command", id: "r1", command: "document.pages", arguments: {} });
+});
+
+test("a paired plugin hides pairing and can unpair to pair again", async () => {
+  const ui = loadUi();
+  const token = crypto.randomBytes(32).toString("base64url");
+  ui.deliver({ type: "bridge-init", token, mode: "local", relayDevice: null, client: {} });
+  // Paired but the companion is not answering yet: no code field or Connect.
+  assert.equal(ui.element("pair-form").hidden, true);
+  assert.equal(ui.element("local-connect").hidden, true);
+  assert.equal(ui.element("local-unpair").hidden, false);
+
+  const socket = ui.sockets.at(-1);
+  socket.emit("open");
+  socket.receive({ type: "hello", protocol: 2, nonce: "server-nonce-0123456789" });
+  await ui.settle();
+  const auth = socket.sent.at(-1);
+  socket.receive({ type: "auth.ok", clientId: "c", proof: proof(token, "auth/server", "server-nonce-0123456789", auth.nonce) });
+  await ui.settle();
+  assert.match(ui.element("status").textContent, /^Connected to this computer/);
+  assert.equal(ui.element("pair-form").hidden, true);
+
+  const postsBefore = ui.posts.length;
+  ui.click("local-unpair");
+  assert.equal(socket.closed, true);
+  assert.deepEqual(ui.posts.slice(postsBefore).filter(message => message.type !== "resize"), [{ type: "forget-token" }]);
+  assert.equal(ui.element("status").textContent, "Unpaired. Connect to pair this computer again.");
+  assert.equal(ui.element("local-unpair").hidden, true);
+  assert.equal(ui.element("local-connect").hidden, false);
+  assert.equal(ui.element("pair-form").hidden, true);
+
+  // Connect now starts a fresh pairing.
+  ui.click("local-connect");
+  const pairing = ui.sockets.at(-1);
+  assert.notEqual(pairing, socket);
+  pairing.emit("open");
+  pairing.receive({ type: "hello", protocol: 2, nonce: "server-nonce-0123456789" });
+  await ui.settle();
+  assert.equal(pairing.sent.at(-1).type, "pair");
+  pairing.receive({ type: "pair.code" });
+  await ui.settle();
+  assert.equal(ui.element("pair-form").hidden, false);
+  ui.element("pair-code").value = "123456";
+  await ui.submit("pair-form");
+  assert.equal(ui.element("pair-form").hidden, true);
+});
+
+test("a companion that rejects the saved pairing makes the plugin forget it", async () => {
+  const ui = loadUi();
+  ui.deliver({ type: "bridge-init", token: "t".repeat(43), mode: "local", relayDevice: null, client: {} });
+  const socket = ui.sockets.at(-1);
+  socket.emit("open");
+  socket.emit("close", { code: 4403, reason: "authentication failed" });
+  await ui.settle();
+  assert.ok(ui.posts.some(message => message.type === "forget-token"));
+  assert.equal(ui.element("local-connect").hidden, false);
+  assert.equal(ui.element("local-unpair").hidden, true);
 });
 
 test("the plugin UI rejects a companion that cannot prove the pairing code", async () => {

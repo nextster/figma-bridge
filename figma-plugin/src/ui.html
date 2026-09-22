@@ -62,6 +62,7 @@
         <button type="submit">Use token</button>
       </form>
     </details>
+    <button id="local-unpair" type="button" class="link" hidden>Unpair this computer</button>
   </section>
 
   <section id="relay-view" hidden>
@@ -175,9 +176,14 @@
       views.relay.hidden = state.mode !== 'relay';
       $('relay-register').hidden = !(state.mode === 'relay' && !state.relayDevice);
       $('relay-home').hidden = !(state.mode === 'relay' && state.relayDevice);
-      $('local-connect').hidden = state.mode !== 'local' || state.connected;
-      $('manual').hidden = state.mode !== 'local' || state.connected;
-      if (state.mode !== 'local') $('pair-form').hidden = true;
+      // A paired plugin offers only Unpair; the code form shows only while a
+      // pairing attempt waits for the code.
+      const local = state.mode === 'local';
+      const paired = Boolean(state.token);
+      $('local-connect').hidden = !local || state.connected || paired;
+      $('manual').hidden = !local || state.connected || paired;
+      $('pair-form').hidden = !local || state.connected || !state.localSession?.awaitingCode;
+      $('local-unpair').hidden = !local || !paired;
       resize();
     }
 
@@ -260,9 +266,9 @@
         render();
         return;
       }
-      const session = { pair, clientNonce: FigmaBridgeAuth.nonce(), serverNonce: null, code: null, paired: false };
+      const session = { pair, clientNonce: FigmaBridgeAuth.nonce(), serverNonce: null, code: null, paired: false, awaitingCode: false };
+      state.localSession = null;
       $('local-connect').disabled = pair;
-      $('pair-form').hidden = true;
       setStatus(pair ? 'Contacting this computer…' : 'Connecting to this computer…');
       open(LOCAL_URL, null, async message => {
         if (message.type === 'hello') {
@@ -276,8 +282,8 @@
             sendMessage({ type: 'auth', nonce: session.clientNonce, proof, client: state.client });
           }
         } else if (message.type === 'pair.code') {
+          session.awaitingCode = true;
           state.localSession = session;
-          $('pair-form').hidden = false;
           $('pair-code').value = '';
           $('pair-code').focus();
           setStatus('Enter the 6-digit code shown on this computer.');
@@ -296,19 +302,18 @@
             if (!FigmaBridgeAuth.equal(expected, message.proof)) throw new Error('Could not verify the Figma Bridge companion on this computer.');
           }
           state.localSession = null;
-          $('pair-form').hidden = true;
           $('local-connect').disabled = false;
           markConnected();
         }
       }, event => {
         clearTimeout(session.helloTimer);
         state.localSession = null;
-        $('pair-form').hidden = true;
         $('local-connect').disabled = false;
         if (pair && event.code === 4403) {
           setStatus(event.reason === 'pairing failed' ? 'That code did not match. Click Connect to try again.' : 'Pairing was cancelled or is unavailable right now.', 'error');
         } else if (event.code === 4403) {
           state.token = '';
+          post({ type: 'forget-token' });
           setStatus('This computer no longer accepts the saved pairing. Connect again.', 'error');
         } else if (event.code === 4408) {
           setStatus('The pairing code expired. Click Connect to try again.', 'error');
@@ -470,6 +475,18 @@
 
     $('local-connect').addEventListener('click', () => connectLocal(true));
 
+    // Forgets the pairing on this Figma so it can be paired again. The
+    // companion keeps its token, which other paired files still use.
+    $('local-unpair').addEventListener('click', () => {
+      closeSocket();
+      state.token = '';
+      state.localSession = null;
+      post({ type: 'forget-token' });
+      setNotice();
+      setStatus('Unpaired. Connect to pair this computer again.');
+      render();
+    });
+
     $('pair-form').addEventListener('submit', async event => {
       event.preventDefault();
       const session = state.localSession;
@@ -483,9 +500,10 @@
         const proof = await FigmaBridgeAuth.proof(code, 'pair/client', session.serverNonce, session.clientNonce);
         if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('The connection to this computer closed. Click Connect to try again.');
         sendMessage({ type: 'pair.proof', nonce: session.clientNonce, proof, client: state.client });
-        $('pair-form').hidden = true;
+        session.awaitingCode = false;
         setNotice();
         setStatus('Checking code…');
+        render();
       } catch (error) {
         setStatus(error?.message || 'Could not send the code.', 'error');
       }
