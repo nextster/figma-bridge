@@ -20,6 +20,8 @@
     .status[data-tone="ok"] { border-color: var(--figma-color-border-success); }
     .status[data-tone="error"] { border-color: var(--figma-color-border-danger); }
     form { display: grid; gap: 8px; margin: 0 0 10px; }
+    /* Author display rules such as form { display: grid } would otherwise override the hidden attribute. */
+    [hidden] { display: none !important; }
     label { color: var(--figma-color-text-secondary); }
     input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--figma-color-border); border-radius: 6px; background: var(--figma-color-bg-secondary); color: inherit; font: 13px ui-monospace, monospace; letter-spacing: .04em; }
     button { padding: 8px 12px; border: 0; border-radius: 6px; background: var(--figma-color-bg-brand); color: var(--figma-color-text-onbrand); font-weight: 600; font-size: 12px; cursor: pointer; }

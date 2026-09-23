@@ -141,6 +141,13 @@ test("a companion that never says hello is reported as outdated", async () => {
   assert.match(ui.element("status").textContent, /Update the Figma Bridge companion/);
 });
 
+test("hidden plugin UI elements stay hidden despite display rules", () => {
+  const html = fs.readFileSync(path.join(root, "figma-plugin/src/ui.html"), "utf8");
+  const style = /<style>([\s\S]*?)<\/style>/.exec(html)[1];
+  // form { display: grid } beats the browser's [hidden] rule unless the page restates it.
+  assert.match(style, /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/);
+});
+
 function loadUi() {
   const html = fs.readFileSync(path.join(root, "figma-plugin/src/ui.html"), "utf8");
   const [authScript, mainScript] = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match => match[1]);
