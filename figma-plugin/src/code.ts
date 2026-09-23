@@ -55,6 +55,7 @@ type UiMessage =
   | CommandMessage
   | { type: "ui-ready" }
   | { type: "save-token" | "store-token"; token: string }
+  | { type: "forget-token" }
   | { type: "set-mode"; mode: BridgeMode }
   | { type: "store-relay-device"; device: RelayDevice }
   | { type: "forget-relay-device" }
@@ -96,6 +97,9 @@ figma.ui.onmessage = async (message: UiMessage) => {
       if (message.type === "save-token") figma.ui.postMessage({ type: "token-saved", token, client: clientInfo() });
       return;
     }
+    case "forget-token":
+      await figma.clientStorage.deleteAsync(TOKEN_KEY);
+      return;
     case "set-mode":
       await figma.clientStorage.setAsync(MODE_KEY, message.mode === "relay" ? "relay" : "local");
       return;
